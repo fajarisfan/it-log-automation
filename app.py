@@ -11,12 +11,14 @@ from reportlab.pdfgen import canvas
 FOLDER_ID = "1tpSWDgfMEac2ktTrUNMr7u7Y5V7tAZwa"
 
 def get_creds():
-    # Mengambil dictionary dari secrets
+    # Ambil dict
     creds_dict = dict(st.secrets["gcp_service_account"])
     
-    # Memastikan private_key diformat dengan benar (mengganti literal \n menjadi karakter newline)
-    if "\\n" in creds_dict["private_key"]:
-        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+    # Paksa ubah teks "\\n" menjadi karakter newline yang asli
+    # Ini sangat penting agar library GoogleAuth mengenali kuncinya
+    raw_key = creds_dict["private_key"]
+    if "\\n" in raw_key:
+        creds_dict["private_key"] = raw_key.replace("\\n", "\n")
     
     return service_account.Credentials.from_service_account_info(
         creds_dict, 
