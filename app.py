@@ -11,15 +11,19 @@ from reportlab.pdfgen import canvas
 FOLDER_ID = "1tpSWDgfMEac2ktTrUNMr7u7Y5V7tAZwa"
 
 def get_creds():
-    # Langsung ambil dari secrets tanpa dimodifikasi sama sekali
-    creds_dict = st.secrets["gcp_service_account"]
+    # Mengambil dictionary dari secrets
+    creds_dict = dict(st.secrets["gcp_service_account"])
     
-    # Langsung gunakan dictionary tersebut
+    # Memastikan private_key diformat dengan benar (mengganti literal \n menjadi karakter newline)
+    if "\\n" in creds_dict["private_key"]:
+        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+    
     return service_account.Credentials.from_service_account_info(
-        dict(creds_dict), 
+        creds_dict, 
         scopes=['https://www.googleapis.com/auth/drive']
     )
 
+# Inisialisasi Drive Service
 drive_service = build('drive', 'v3', credentials=get_creds())
 
 # --- FUNGSI DRIVE ---
@@ -80,15 +84,21 @@ ss_file = st.file_uploader("Upload Screenshot WA", type=['png', 'jpg'])
 
 if st.button("Konfirmasi & Update Laporan"):
     with st.spinner("Sedang memproses ke Drive..."):
-        new_entry = {"Bulan": bulan, "Unit": unit, "Kendala": kendala, "Solusi": solusi}
-        all_data = save_to_json(new_entry)
-        update_pdf(all_data)
-        
-        folder_bulan_id = get_drive_file_id(bulan) or drive_service.files().create(body={'name': bulan, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [FOLDER_ID]}, fields='id').execute().get('id')
-        
-        if ss_file:
-            file_metadata = {'name': f"SS_{unit}_{bulan}.png", 'parents': [folder_bulan_id]}
-            media = MediaIoBaseUpload(io.BytesIO(ss_file.read()), mimetype='image/png')
-            drive_service.files().create(body=file_metadata, media_body=media).execute()
+        try:
+            new_entry = {"Bulan": bulan, "Unit": unit, "Kendala": kendala, "Solusi": solusi}
+            all_data = save_to_json(new_entry)
+            update_pdf(all_data)
             
-    st.success("Berhasil! Data, PDF, dan SS sudah terupdate di Drive.")
+            folder_bulan_id = get_drive_file_id(bulan) or drive_service.files().create(
+                body={'name': bulan, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [FOLDER_ID]}, 
+                fields='id'
+            ).execute().get('id')
+            
+            if ss_file:
+                file_metadata = {'name': f"SS_{unit}_{bulan}.png", 'parents': [folder_bulan_id]}
+                media = MediaIoBaseUpload(io.BytesIO(ss_file.read()), mimetype='image/png')
+                drive_service.files().create(body=file_metadata, media_body=media).execute()
+                
+            st.success("Berhasil! Data, PDF, dan SS sudah terupdate di Drive.")
+        except Exception as e:
+            st.error(f"Terjadi kesalahan: {e}")
