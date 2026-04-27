@@ -10,16 +10,13 @@ from reportlab.pdfgen import canvas
 # --- KONFIGURASI ---
 FOLDER_ID = "1tpSWDgfMEac2ktTrUNMr7u7Y5V7tAZwa"
 
-# Mengambil kredensial dari Secrets dengan penanganan format
 def get_creds():
-    # Salin isi secrets ke dalam dictionary baru agar bisa diedit
-    creds_dict = dict(st.secrets["gcp_service_account"])
+    # Langsung ambil dari secrets tanpa dimodifikasi sama sekali
+    creds_dict = st.secrets["gcp_service_account"]
     
-    # Sekarang kita bisa memodifikasi dictionary baru ini
-    creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-    
+    # Langsung gunakan dictionary tersebut
     return service_account.Credentials.from_service_account_info(
-        creds_dict, 
+        dict(creds_dict), 
         scopes=['https://www.googleapis.com/auth/drive']
     )
 
