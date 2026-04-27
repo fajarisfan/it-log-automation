@@ -105,10 +105,20 @@ def generate_pdf(all_data):
                "Jenis Kendala / Pekerjaan", "Tindakan / Solusi", "Status"]]
 
     rows = [header]
-    for i, e in enumerate(all_data):
-        rows.append([
+    last_bulan = None  # ← ini di luar for, tapi DALAM fungsi
+
+    for i, e in enumerate(all_data):  # ← for loop
+        bulan_ini = e.get("Bulan", "-")
+
+        if bulan_ini == last_bulan:   # ← ini DALAM for
+            tampil_bulan = ""
+        else:
+            tampil_bulan = bulan_ini
+            last_bulan = bulan_ini
+
+        rows.append([                 # ← ini DALAM for
             Paragraph(str(i+1), ctr),
-            Paragraph(e.get("Bulan",  "-"), cell),
+            Paragraph(tampil_bulan, cell),
             Paragraph(e.get("Unit",   "-"), cell),
             Paragraph(e.get("Kendala","-"), cell),
             Paragraph(e.get("Solusi", "-"), cell),
@@ -140,7 +150,7 @@ def generate_pdf(all_data):
     doc.build(elements)
     buf.seek(0)
     return buf
-
+    
 def show_pdf_preview(pdf_buffer):
     """Tampilkan PDF inline di Streamlit."""
     b64 = base64.b64encode(pdf_buffer.read()).decode("utf-8")
