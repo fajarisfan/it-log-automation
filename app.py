@@ -51,14 +51,8 @@ def get_file_id(service, name, parent_id=FOLDER_ID):
 def load_json(service):
     fid = get_file_id(service, JSON_NAME)
     if not fid:
-        # Auto-create file JSON kosong di Drive
-        empty = json.dumps([], ensure_ascii=False).encode("utf-8")
-        media = MediaIoBaseUpload(io.BytesIO(empty), mimetype="application/json", resumable=False)
-        f = service.files().create(
-            body={"name": JSON_NAME, "parents": [FOLDER_ID]},
-            media_body=media, fields="id"
-        ).execute()
-        return [], f["id"]
+        st.error("❌ File `laporan_db.json` tidak ditemukan. Pastikan file sudah ada di folder Drive dan folder sudah di-share ke service account sebagai Editor.")
+        st.stop()
     req = service.files().get_media(fileId=fid)
     fh  = io.BytesIO()
     dl  = MediaIoBaseDownload(fh, req)
@@ -71,28 +65,20 @@ def load_json(service):
     return json.loads(raw), fid
 
 def save_json(service, data, fid=None):
+    if not fid:
+        st.error("❌ File `laporan_db.json` tidak ditemukan. Cek folder Drive.")
+        st.stop()
     b = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
     media = MediaIoBaseUpload(io.BytesIO(b), mimetype="application/json", resumable=False)
-    if not fid:
-        # Auto-create kalau fid tidak diketahui
-        service.files().create(
-            body={"name": JSON_NAME, "parents": [FOLDER_ID]},
-            media_body=media
-        ).execute()
-    else:
-        service.files().update(fileId=fid, media_body=media).execute()
+    service.files().update(fileId=fid, media_body=media).execute()
 
 def upload_pdf(service, pdf_buffer):
     fid = get_file_id(service, PDF_NAME)
-    media = MediaIoBaseUpload(pdf_buffer, mimetype="application/pdf", resumable=False)
     if not fid:
-        # Auto-create PDF pertama kali
-        service.files().create(
-            body={"name": PDF_NAME, "parents": [FOLDER_ID]},
-            media_body=media
-        ).execute()
-    else:
-        service.files().update(fileId=fid, media_body=media).execute()
+        st.error(f"❌ File `{PDF_NAME}` tidak ditemukan di folder Drive. Pastikan file sudah ada dan folder di-share ke service account sebagai Editor.")
+        st.stop()
+    media = MediaIoBaseUpload(pdf_buffer, mimetype="application/pdf", resumable=False)
+    service.files().update(fileId=fid, media_body=media).execute()
 
 def upload_screenshot(service, ss_file, bulan, unit):
     try:
