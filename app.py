@@ -15,7 +15,7 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT
 
 # --- KONFIGURASI ---
 FOLDER_ID = "1tpSWDgfMEac2ktTrUNMr7u7Y5V7tAZwa"
-PDF_NAME  = "Laporan_IT_Triwulan_I_Isfan.pdf"
+PDF_NAME  = "Laporan_IT_Triwulan_1_Isfan.pdf"
 PDF_TITLE = "Laporan IT Triwulan I - Isfan"
 JSON_NAME = "laporan_db.json"
 
@@ -51,7 +51,14 @@ def get_file_id(service, name, parent_id=FOLDER_ID):
 def load_json(service):
     fid = get_file_id(service, JSON_NAME)
     if not fid:
-        return [], None
+        # Auto-create file JSON kosong di Drive
+        empty = json.dumps([], ensure_ascii=False).encode("utf-8")
+        media = MediaIoBaseUpload(io.BytesIO(empty), mimetype="application/json", resumable=False)
+        f = service.files().create(
+            body={"name": JSON_NAME, "parents": [FOLDER_ID]},
+            media_body=media, fields="id"
+        ).execute()
+        return [], f["id"]
     req = service.files().get_media(fileId=fid)
     fh  = io.BytesIO()
     dl  = MediaIoBaseDownload(fh, req)
@@ -64,20 +71,28 @@ def load_json(service):
     return json.loads(raw), fid
 
 def save_json(service, data, fid=None):
-    if not fid:
-        st.error("❌ File `laporan_db.json` belum ada di Drive. Upload manual dulu.")
-        st.stop()
     b = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
     media = MediaIoBaseUpload(io.BytesIO(b), mimetype="application/json", resumable=False)
-    service.files().update(fileId=fid, media_body=media).execute()
+    if not fid:
+        # Auto-create kalau fid tidak diketahui
+        service.files().create(
+            body={"name": JSON_NAME, "parents": [FOLDER_ID]},
+            media_body=media
+        ).execute()
+    else:
+        service.files().update(fileId=fid, media_body=media).execute()
 
 def upload_pdf(service, pdf_buffer):
     fid = get_file_id(service, PDF_NAME)
-    if not fid:
-        st.error(f"❌ File `{PDF_NAME}` belum ada di Drive. Upload manual dulu.")
-        st.stop()
     media = MediaIoBaseUpload(pdf_buffer, mimetype="application/pdf", resumable=False)
-    service.files().update(fileId=fid, media_body=media).execute()
+    if not fid:
+        # Auto-create PDF pertama kali
+        service.files().create(
+            body={"name": PDF_NAME, "parents": [FOLDER_ID]},
+            media_body=media
+        ).execute()
+    else:
+        service.files().update(fileId=fid, media_body=media).execute()
 
 def upload_screenshot(service, ss_file, bulan, unit):
     try:
