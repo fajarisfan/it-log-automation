@@ -225,9 +225,16 @@ st.title("🖥️ IT Log Automation")
 st.caption("Input laporan kendala IT dan simpan otomatis ke Google Drive")
 
 service = get_drive_service()
-tab1, tab2 = st.tabs(["📝 Input Laporan", "🗂️ Lihat & Hapus Data"])
 
-# ── TAB 1 ────────────────────────────────────────────────────
+# ── Session state untuk edit ──────────────────────────────────
+if "edit_index" not in st.session_state:
+    st.session_state.edit_index = None
+
+tab1, tab2 = st.tabs(["📝 Input Laporan", "🗂️ Lihat, Edit & Hapus Data"])
+
+# ══════════════════════════════════════════════════════════════
+# TAB 1 — CREATE
+# ══════════════════════════════════════════════════════════════
 with tab1:
     with st.form("form_laporan"):
         bulan   = st.selectbox("Bulan", [
@@ -269,7 +276,9 @@ with tab1:
                 except Exception as e:
                     st.error(f"❌ Terjadi kesalahan: {e}")
 
-# ── TAB 2 ────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════
+# TAB 2 — READ / UPDATE / DELETE
+# ══════════════════════════════════════════════════════════════
 with tab2:
     st.subheader("📋 Data Laporan Tersimpan")
     data, fid = load_json(service)
@@ -282,27 +291,84 @@ with tab2:
             show_pdf_preview(generate_pdf(data))
 
         st.divider()
-        to_delete = []
+
+        BULAN_OPTIONS = [
+            "Januari","Februari","Maret","April","Mei","Juni",
+            "Juli","Agustus","September","Oktober","November","Desember"
+        ]
+
         for i, entry in enumerate(data):
-            c1, c2 = st.columns([5,1])
-            with c1:
-                st.markdown(
-                    f"**{i+1}. {entry.get('Bulan','-')} | {entry.get('Unit','-')}**  \n"
-                    f"🔧 {entry.get('Kendala','-')}  \n"
-                    f"✅ {entry.get('Solusi','-')}")
-            with c2:
-                if st.button("🗑️", key=f"del_{i}"):
-                    to_delete.append(i)
+            # ── Mode EDIT aktif untuk baris ini ──────────────
+            if st.session_state.edit_index == i:
+                with st.container(border=True):
+                    st.markdown(f"#### ✏️ Edit Entri #{i+1}")
+                    with st.form(key=f"form_edit_{i}"):
+                        e_bulan = st.selectbox(
+                            "Bulan",
+                            BULAN_OPTIONS,
+                            index=BULAN_OPTIONS.index(entry.get("Bulan","Januari"))
+                                  if entry.get("Bulan") in BULAN_OPTIONS else 0
+                        )
+                        e_unit    = st.text_input("Lokasi / Unit",
+                                                  value=entry.get("Unit",""))
+                        e_kendala = st.text_area("Jenis Kendala / Pekerjaan",
+                                                 value=entry.get("Kendala",""))
+                        e_solusi  = st.text_area("Tindakan / Solusi",
+                                                 value=entry.get("Solusi",""))
+                        col_save, col_cancel = st.columns(2)
+                        with col_save:
+                            save_edit = st.form_submit_button("💾 Simpan Perubahan",
+                                                              type="primary")
+                        with col_cancel:
+                            cancel_edit = st.form_submit_button("✖ Batal")
 
-        if to_delete:
-            with st.spinner("Menghapus..."):
-                new_data = [e for i,e in enumerate(data) if i not in to_delete]
-                save_json(service, new_data, fid)
-                upload_pdf(service, generate_pdf(new_data))
-                st.success("✅ Dihapus!")
-                st.rerun()
+                    if save_edit:
+                        if not e_unit or not e_kendala or not e_solusi:
+                            st.warning("⚠️ Semua field harus diisi.")
+                        else:
+                            with st.spinner("Menyimpan perubahan ke Drive..."):
+                                try:
+                                    data[i] = {
+                                        "Bulan":   e_bulan,
+                                        "Unit":    e_unit,
+                                        "Kendala": e_kendala,
+                                        "Solusi":  e_solusi,
+                                    }
+                                    save_json(service, data, fid)
+                                    upload_pdf(service, generate_pdf(data))
+                                    st.success("✅ Entri berhasil diperbarui!")
+                                    st.session_state.edit_index = None
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"❌ Gagal menyimpan: {e}")
 
-    # ── Gabungkan Data Januari–April (TIDAK menimpa data lama) ──
+                    if cancel_edit:
+                        st.session_state.edit_index = None
+                        st.rerun()
+
+            # ── Mode NORMAL (tampil biasa + tombol Edit/Hapus) ─
+            else:
+                c1, c2, c3 = st.columns([5, 1, 1])
+                with c1:
+                    st.markdown(
+                        f"**{i+1}. {entry.get('Bulan','-')} | {entry.get('Unit','-')}**  \n"
+                        f"🔧 {entry.get('Kendala','-')}  \n"
+                        f"✅ {entry.get('Solusi','-')}"
+                    )
+                with c2:
+                    if st.button("✏️", key=f"edit_{i}", help="Edit entri ini"):
+                        st.session_state.edit_index = i
+                        st.rerun()
+                with c3:
+                    if st.button("🗑️", key=f"del_{i}", help="Hapus entri ini"):
+                        with st.spinner("Menghapus..."):
+                            new_data = [e for j, e in enumerate(data) if j != i]
+                            save_json(service, new_data, fid)
+                            upload_pdf(service, generate_pdf(new_data))
+                            st.success("✅ Dihapus!")
+                            st.rerun()
+
+    # ── Gabungkan Data Januari–April ──────────────────────────
     st.divider()
     with st.expander("⚙️ Tambah Data Awal Januari–April"):
         st.info("✅ Data Januari–April akan ditambahkan **di depan** data yang sudah ada. "
@@ -334,7 +400,7 @@ with tab2:
             with st.spinner("Menggabungkan data..."):
                 try:
                     existing, fid_ex = load_json(service)
-                    merged = data_awal + existing  # Januari-April di depan, Mei dst di belakang
+                    merged = data_awal + existing
                     save_json(service, merged, fid_ex)
                     upload_pdf(service, generate_pdf(merged))
                     st.success(f"✅ Berhasil! Total sekarang {len(merged)} entri. Data lama tetap aman.")
