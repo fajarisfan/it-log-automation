@@ -222,7 +222,7 @@ def show_pdf_preview(pdf_buffer):
         unsafe_allow_html=True)
 
 # ── UI ────────────────────────────────────────────────────────
-st.title("🖥️ IT Log Automation")
+st.title("🖥️ Buat push dukung bukti EKIN")
 st.caption("Input laporan kendala IT dan simpan otomatis ke Google Drive")
 
 service = get_drive_service()
