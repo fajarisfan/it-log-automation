@@ -115,70 +115,7 @@ def check_missing_files(service):
             missing.append(f"JSON: `{cfg['json_name']}` ({nama_triwulan})")
     return missing
 
-def upload_screenshot(service, ss_file, bulan, unit):
-    try:
-        fid = get_file_id(service, bulan)
-        if not fid:
-            try:
-                f = service.files().create(
-                    body={"name": bulan,
-                          "mimeType": "application/vnd.google-apps.folder",
-                          "parents": [FOLDER_ID]},
-                    fields="id"
-                ).execute()
-                fid = f["id"]
-            except Exception:
-                fid = FOLDER_ID
-        ext = ss_file.name.rsplit(".", 1)[-1]
-        service.files().create(
-            body={"name": f"SS_{unit}_{bulan}.{ext}", "parents": [fid]},
-            media_body=MediaIoBaseUpload(
-                io.BytesIO(ss_file.read()),
-                mimetype=f"image/{ext}", resumable=False)
-        ).execute()
-    except Exception as e:
-        st.warning(f"⚠️ Screenshot tidak tersimpan: {e}")
 
-# ── Helper: Deteksi folder bulan yang sudah ada di Drive ─────
-BULAN_URUT = [
-    "Januari","Februari","Maret","April","Mei","Juni",
-    "Juli","Agustus","September","Oktober","November","Desember"
-]
-
-def get_existing_month_folders(service):
-    """Return dict {nama_bulan: folder_id} untuk folder bulan yang sudah ada di Drive."""
-    q = f"'{FOLDER_ID}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
-    res = service.files().list(q=q, fields="files(id,name)").execute()
-    items = res.get("files", [])
-    return {item["name"]: item["id"] for item in items if item["name"] in BULAN_URUT}
-
-def get_next_months(existing_folders):
-    """Return list bulan yang belum ada foldernya."""
-    return [b for b in BULAN_URUT if b not in existing_folders]
-
-def get_or_create_folder(service, bulan_name):
-    """Get folder id bulan, buat baru kalau belum ada."""
-    fid = get_file_id(service, bulan_name)
-    if not fid:
-        f = service.files().create(
-            body={"name": bulan_name,
-                  "mimeType": "application/vnd.google-apps.folder",
-                  "parents": [FOLDER_ID]},
-            fields="id"
-        ).execute()
-        fid = f["id"]
-    return fid
-
-def upload_ss_to_folder(service, ss_file, folder_id, filename):
-    """Upload file SS ke folder tertentu."""
-    ext = ss_file.name.rsplit(".", 1)[-1].lower()
-    mime = f"image/{ext}" if ext in ["jpg","jpeg","png","webp"] else "application/octet-stream"
-    service.files().create(
-        body={"name": filename, "parents": [folder_id]},
-        media_body=MediaIoBaseUpload(
-            io.BytesIO(ss_file.read()),
-            mimetype=mime, resumable=False)
-    ).execute()
 
 # ── Dekorasi halaman PDF ──────────────────────────────────────
 def make_page_decorator(header_text):
@@ -338,7 +275,7 @@ st.divider()
 if "edit_index" not in st.session_state:
     st.session_state.edit_index = None
 
-tab1, tab2, tab3 = st.tabs(["📝 Input Laporan", "🗂️ Lihat, Edit & Hapus Data", "📸 Upload SS WA"])
+tab1, tab2 = st.tabs(["📝 Input Laporan", "🗂️ Lihat, Edit & Hapus Data"])
 
 # ══════════════════════════════════════════════════════════════
 # TAB 1 — CREATE
@@ -349,9 +286,7 @@ with tab1:
         unit    = st.text_input("Lokasi / Unit")
         kendala = st.text_area("Jenis Kendala / Pekerjaan")
         solusi  = st.text_area("Tindakan / Solusi")
-        with st.expander("📎 Upload Screenshot WA (opsional, lebih lengkap di Tab 3)"):
-            st.caption("💡 Untuk upload SS WA lebih mudah, pakai tab **📸 Upload SS WA** di atas.")
-            ss_file = st.file_uploader("Screenshot WA", type=["png","jpg","jpeg"])
+        ss_file = None
         col1, col2 = st.columns(2)
         with col1: preview_btn = st.form_submit_button("🔍 Preview PDF")
         with col2: submit_btn  = st.form_submit_button("✅ Konfirmasi & Update Laporan")
@@ -376,8 +311,7 @@ with tab1:
                                  "Kendala":kendala,"Solusi":solusi})
                     save_json(service, data, fid)
                     upload_pdf(service, generate_pdf(data, PDF_TITLE, HDR_TEXT), PDF_NAME)
-                    if ss_file:
-                        upload_screenshot(service, ss_file, bulan, unit)
+
                     st.success(f"✅ Berhasil! **{PDF_NAME}** diperbarui di Drive.")
                     st.balloons()
                 except Exception as e:
@@ -511,51 +445,3 @@ with tab2:
                     st.rerun()
                 except Exception as e:
                     st.error(f"❌ Gagal: {e}")
-
-# ══════════════════════════════════════════════════════════════
-# TAB 3 — UPLOAD SCREENSHOT WA
-# ══════════════════════════════════════════════════════════════
-with tab3:
-    st.subheader("📸 Upload Screenshot WhatsApp")
-    st.caption("Pilih bulan, upload SS WA — file masuk ke folder bulan di Drive.")
-
-    # Load folder bulan yang ada di Drive
-    with st.spinner("Mengecek folder bulan di Drive..."):
-        try:
-            existing_folders = get_existing_month_folders(service)
-        except Exception as e:
-            st.error(f"❌ Gagal baca folder Drive: {e}")
-            existing_folders = {}
-
-    if not existing_folders:
-        st.warning("⚠️ Belum ada folder bulan di Drive. Buat folder bulan dulu secara manual di Drive.")
-    else:
-        with st.form("form_upload_ss"):
-            bulan_ss = st.selectbox(
-                "Pilih Bulan",
-                [b for b in BULAN_URUT if b in existing_folders],
-                help="Folder bulan yang tersedia di Drive"
-            )
-            files_ss = st.file_uploader(
-                "Upload Screenshot WA",
-                type=["png", "jpg", "jpeg", "webp"],
-                accept_multiple_files=True,
-                help="Bisa upload lebih dari 1 file sekaligus"
-            )
-            submit_ss = st.form_submit_button("📤 Upload ke Drive", type="primary")
-
-        if submit_ss:
-            if not files_ss:
-                st.warning("⚠️ Pilih minimal 1 file screenshot.")
-            else:
-                with st.spinner(f"Mengupload ke folder '{bulan_ss}'..."):
-                    try:
-                        folder_id = existing_folders[bulan_ss]
-                        berhasil = 0
-                        for ss in files_ss:
-                            upload_ss_to_folder(service, ss, folder_id, ss.name)
-                            berhasil += 1
-                        st.success(f"✅ {berhasil} file berhasil diupload ke folder **{bulan_ss}**!")
-                        st.balloons()
-                    except Exception as e:
-                        st.error(f"❌ Gagal upload: {e}")
