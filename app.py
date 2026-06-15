@@ -517,20 +517,9 @@ with tab2:
 # ══════════════════════════════════════════════════════════════
 with tab3:
     st.subheader("📸 Upload Screenshot WhatsApp")
-    st.caption("SS WA masuk ke folder bulan yang belum ada — folder lama (Januari–April) dilewati otomatis.")
+    st.caption("Pilih bulan, upload SS WA — file masuk ke folder bulan di Drive.")
 
-    # Refresh state untuk folder
-    if "ss_folders_refreshed" not in st.session_state:
-        st.session_state.ss_folders_refreshed = False
-
-    # Tombol refresh manual
-    col_refresh, _ = st.columns([1, 3])
-    with col_refresh:
-        if st.button("🔄 Cek Folder Drive"):
-            st.session_state.ss_folders_refreshed = True
-            st.rerun()
-
-    # Load info folder dari Drive
+    # Load folder bulan yang ada di Drive
     with st.spinner("Mengecek folder bulan di Drive..."):
         try:
             existing_folders = get_existing_month_folders(service)
@@ -538,49 +527,14 @@ with tab3:
             st.error(f"❌ Gagal baca folder Drive: {e}")
             existing_folders = {}
 
-    next_months = get_next_months(existing_folders)
-
-    # Info status folder
-    with st.expander("📁 Status Folder Bulan di Drive", expanded=True):
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.markdown("**✅ Sudah Ada:**")
-            if existing_folders:
-                for b in BULAN_URUT:
-                    if b in existing_folders:
-                        st.markdown(f"- {b}")
-            else:
-                st.caption("(belum ada folder bulan)")
-        with col_b:
-            st.markdown("**📂 Belum Ada (bisa upload):**")
-            if next_months:
-                for b in next_months:
-                    st.markdown(f"- {b}")
-            else:
-                st.success("Semua bulan sudah ada foldernya!")
-
-    st.divider()
-
-    if not next_months:
-        st.info("✅ Semua bulan sudah punya folder. Tidak ada folder baru yang perlu dibuat.")
+    if not existing_folders:
+        st.warning("⚠️ Belum ada folder bulan di Drive. Buat folder bulan dulu secara manual di Drive.")
     else:
-        # Form upload SS
         with st.form("form_upload_ss"):
-            st.markdown("#### Upload SS ke Bulan Baru")
-
-            # Hanya tampilkan bulan yang belum ada foldernya
             bulan_ss = st.selectbox(
-                "Pilih Bulan Tujuan",
-                next_months,
-                help="Hanya bulan yang belum punya folder ditampilkan"
-            )
-            unit_ss = st.text_input(
-                "Unit / Lokasi",
-                placeholder="Contoh: IGD, Farmasi, Kasir..."
-            )
-            keterangan_ss = st.text_input(
-                "Keterangan (opsional)",
-                placeholder="Contoh: koordinasi BPJS, laporan breakout..."
+                "Pilih Bulan",
+                [b for b in BULAN_URUT if b in existing_folders],
+                help="Folder bulan yang tersedia di Drive"
             )
             files_ss = st.file_uploader(
                 "Upload Screenshot WA",
@@ -588,73 +542,20 @@ with tab3:
                 accept_multiple_files=True,
                 help="Bisa upload lebih dari 1 file sekaligus"
             )
-
             submit_ss = st.form_submit_button("📤 Upload ke Drive", type="primary")
 
         if submit_ss:
-            if not unit_ss:
-                st.warning("⚠️ Isi Unit / Lokasi dulu.")
-            elif not files_ss:
+            if not files_ss:
                 st.warning("⚠️ Pilih minimal 1 file screenshot.")
             else:
-                with st.spinner(f"Membuat/mengecek folder '{bulan_ss}' dan upload..."):
+                with st.spinner(f"Mengupload ke folder '{bulan_ss}'..."):
                     try:
-                        folder_id = get_or_create_folder(service, bulan_ss)
+                        folder_id = existing_folders[bulan_ss]
                         berhasil = 0
-                        for idx, ss in enumerate(files_ss, start=1):
-                            ext = ss.name.rsplit(".", 1)[-1].lower()
-                            ket_part = f"_{keterangan_ss.replace(' ','_')}" if keterangan_ss else ""
-                            nama_file = f"SS_{unit_ss.replace(' ','_')}_{bulan_ss}{ket_part}_{idx}.{ext}"
-                            upload_ss_to_folder(service, ss, folder_id, nama_file)
+                        for ss in files_ss:
+                            upload_ss_to_folder(service, ss, folder_id, ss.name)
                             berhasil += 1
-                        st.success(
-                            f"✅ {berhasil} file berhasil diupload ke folder **{bulan_ss}** di Drive!\n\n"
-                            f"📁 Nama folder: `{bulan_ss}` | 🗂️ Unit: `{unit_ss}`"
-                        )
+                        st.success(f"✅ {berhasil} file berhasil diupload ke folder **{bulan_ss}**!")
                         st.balloons()
-                        # Reset state refresh supaya folder baru ke-detect
-                        st.session_state.ss_folders_refreshed = False
-                    except Exception as e:
-                        st.error(f"❌ Gagal upload: {e}")
-
-    # ── Upload SS ke folder yang sudah ada ───────────────────
-    st.divider()
-    with st.expander("➕ Upload SS ke Folder yang Sudah Ada"):
-        st.caption("Kalau mau nambahin SS ke folder bulan yang sudah ada.")
-        with st.form("form_upload_ss_existing"):
-            bulan_exist = st.selectbox(
-                "Pilih Bulan",
-                list(existing_folders.keys()) if existing_folders else ["(tidak ada)"],
-                help="Folder bulan yang sudah ada di Drive"
-            )
-            unit_ex = st.text_input("Unit / Lokasi", key="unit_exist")
-            ket_ex  = st.text_input("Keterangan (opsional)", key="ket_exist")
-            files_ex = st.file_uploader(
-                "Upload Screenshot WA",
-                type=["png","jpg","jpeg","webp"],
-                accept_multiple_files=True,
-                key="files_exist"
-            )
-            submit_ex = st.form_submit_button("📤 Upload ke Folder Ini")
-
-        if submit_ex:
-            if not existing_folders:
-                st.warning("⚠️ Tidak ada folder yang bisa dipilih.")
-            elif not unit_ex:
-                st.warning("⚠️ Isi Unit / Lokasi dulu.")
-            elif not files_ex:
-                st.warning("⚠️ Pilih minimal 1 file screenshot.")
-            else:
-                with st.spinner(f"Upload ke folder '{bulan_exist}'..."):
-                    try:
-                        folder_id = existing_folders[bulan_exist]
-                        berhasil = 0
-                        for idx, ss in enumerate(files_ex, start=1):
-                            ext = ss.name.rsplit(".", 1)[-1].lower()
-                            ket_part = f"_{ket_ex.replace(' ','_')}" if ket_ex else ""
-                            nama_file = f"SS_{unit_ex.replace(' ','_')}_{bulan_exist}{ket_part}_{idx}.{ext}"
-                            upload_ss_to_folder(service, ss, folder_id, nama_file)
-                            berhasil += 1
-                        st.success(f"✅ {berhasil} file diupload ke folder **{bulan_exist}**!")
                     except Exception as e:
                         st.error(f"❌ Gagal upload: {e}")
