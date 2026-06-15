@@ -15,9 +15,29 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT
 
 # --- KONFIGURASI ---
 FOLDER_ID = "1tpSWDgfMEac2ktTrUNMr7u7Y5V7tAZwa"
-PDF_NAME  = "Laporan_IT_Triwulan_1_Isfan.pdf"
-PDF_TITLE = "Laporan IT Triwulan I - Isfan"
 JSON_NAME = "laporan_db.json"
+
+TRIWULAN_CONFIG = {
+    "Triwulan 1 (Jan–Mar)": {
+        "pdf_name":  "Laporan_IT_Triwulan_1_Isfan.pdf",
+        "pdf_title": "Laporan IT Triwulan I",
+        "header":    "LAPORAN IT TRIWULAN I",
+        "bulan":     ["Januari", "Februari", "Maret"],
+    },
+    "Triwulan 2 (Apr–Jun)": {
+        "pdf_name":  "Laporan_IT_Triwulan_2_Isfan.pdf",
+        "pdf_title": "Laporan IT Triwulan II",
+        "header":    "LAPORAN IT TRIWULAN II",
+        "bulan":     ["April", "Mei", "Juni"],
+    },
+    "Triwulan Final / Tahunan": {
+        "pdf_name":  "Laporan_IT_Triwulan_Final_Isfan.pdf",
+        "pdf_title": "Laporan IT Tahunan (Final)",
+        "header":    "LAPORAN IT TAHUNAN (FINAL)",
+        "bulan":     ["Januari","Februari","Maret","April","Mei","Juni",
+                      "Juli","Agustus","September","Oktober","November","Desember"],
+    },
+}
 
 C_HEADER  = colors.HexColor("#1A5276")
 C_SUBHEAD = colors.HexColor("#2E86C1")
@@ -29,74 +49,41 @@ C_WHITE   = colors.white
 C_GREEN   = colors.HexColor("#1E8449")
 
 # ── Google Drive ─────────────────────────────────────────────
-import time
-
-def _build_service():
-    creds_dict = dict(st.secrets["gcp_service_account"])
-    creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-    creds = service_account.Credentials.from_service_account_info(
-        creds_dict, scopes=["https://www.googleapis.com/auth/drive"]
-    )
-    return build("drive", "v3", credentials=creds)
-
+@st.cache_resource
 def get_drive_service():
     try:
-        return _build_service()
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+        creds = service_account.Credentials.from_service_account_info(
+            creds_dict, scopes=["https://www.googleapis.com/auth/drive"]
+        )
+        return build("drive", "v3", credentials=creds)
     except Exception as e:
         st.error(f"❌ Gagal konek ke Google Drive: {e}")
         st.stop()
 
-def _drive_call(fn, retries=3):
-    for attempt in range(retries):
-        try:
-            return fn()
-        except (BrokenPipeError, ConnectionError, OSError):
-            if attempt < retries - 1:
-                time.sleep(1.5)
-            else:
-                raise
-        except Exception:
-            raise
-
 def get_file_id(service, name, parent_id=FOLDER_ID):
     q = f"name='{name}' and '{parent_id}' in parents and trashed=false"
-    def call():
-        res = service.files().list(q=q, fields="files(id)").execute()
-        items = res.get("files", [])
-        return items[0]["id"] if items else None
-    try:
-        return _drive_call(call)
-    except (BrokenPipeError, ConnectionError, OSError):
-        try:
-            svc2 = _build_service()
-            res = svc2.files().list(q=q, fields="files(id)").execute()
-            items = res.get("files", [])
-            return items[0]["id"] if items else None
-        except Exception as e:
-            st.error(f"❌ Gagal konek ke Drive: {e}")
-            st.stop()
+    res = service.files().list(q=q, fields="files(id)").execute()
+    items = res.get("files", [])
+    return items[0]["id"] if items else None
 
-def load_json(service, retries=3):
+def load_json(service):
     fid = get_file_id(service, JSON_NAME)
     if not fid:
         st.error("❌ File `laporan_db.json` tidak ditemukan. Pastikan file sudah ada di folder Drive dan folder sudah di-share ke service account sebagai Editor.")
         st.stop()
-    def call():
-        req = service.files().get_media(fileId=fid)
-        fh  = io.BytesIO()
-        dl  = MediaIoBaseDownload(fh, req)
-        done = False
-        while not done:
-            _, done = dl.next_chunk()
-        raw = fh.getvalue().decode("utf-8").strip()
-        if not raw:
-            return [], fid
-        return json.loads(raw), fid
-    try:
-        return _drive_call(call, retries)
-    except (BrokenPipeError, ConnectionError, OSError) as e:
-        st.error(f"❌ Koneksi ke Drive terputus. Coba refresh halaman.")
-        st.stop()
+    req = service.files().get_media(fileId=fid)
+    fh  = io.BytesIO()
+    dl  = MediaIoBaseDownload(fh, req)
+    done = False
+    while not done:
+        _, done = dl.next_chunk()
+    raw = fh.getvalue().decode("utf-8").strip()
+    if not raw:
+        return [], fid
+    return json.loads(raw), fid
+
 def save_json(service, data, fid=None):
     if not fid:
         st.error("❌ File `laporan_db.json` tidak ditemukan. Cek folder Drive.")
@@ -105,13 +92,62 @@ def save_json(service, data, fid=None):
     media = MediaIoBaseUpload(io.BytesIO(b), mimetype="application/json", resumable=False)
     service.files().update(fileId=fid, media_body=media).execute()
 
-def upload_pdf(service, pdf_buffer):
-    fid = get_file_id(service, PDF_NAME)
+def create_placeholder_pdf(pdf_title, header_text):
+    """Buat PDF placeholder 1 halaman untuk file yang belum ada di Drive."""
+    buf = io.BytesIO()
+    doc = BaseDocTemplate(buf, pagesize=A4,
+                          rightMargin=1.5*cm, leftMargin=1.5*cm,
+                          topMargin=3.0*cm, bottomMargin=1.8*cm)
+    frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="main")
+    doc.addPageTemplates([PageTemplate(id="main", frames=frame,
+                                       onPage=make_page_decorator(header_text))])
+    s_judul = ParagraphStyle("judul", fontName="Helvetica-Bold", fontSize=15,
+                             textColor=C_HEADER, alignment=TA_CENTER, spaceAfter=12)
+    s_info  = ParagraphStyle("info",  fontName="Helvetica", fontSize=10,
+                             textColor=C_TEXT, alignment=TA_CENTER, leading=16)
+    elements = [
+        Spacer(1, 2*cm),
+        Paragraph(pdf_title, s_judul),
+        Spacer(1, 0.5*cm),
+        HRFlowable(width="60%", thickness=2, color=C_ACCENT, spaceAfter=20),
+        Spacer(1, 0.5*cm),
+        Paragraph("File ini akan diperbarui otomatis", s_info),
+        Paragraph("melalui aplikasi EKIN IT Support.", s_info),
+        Spacer(1, 0.3*cm),
+        Paragraph("Teknisi: Isfan | Divisi Teknologi Informasi", s_info),
+        Paragraph("RSUD Kota Cilegon", s_info),
+    ]
+    doc.build(elements)
+    buf.seek(0)
+    return buf
+
+def upload_pdf(service, pdf_buffer, pdf_name=None):
+    target = pdf_name or "Laporan_IT_Triwulan_1_Isfan.pdf"
+    fid = get_file_id(service, target)
     if not fid:
-        st.error(f"❌ File `{PDF_NAME}` tidak ditemukan di folder Drive. Pastikan file sudah ada dan folder di-share ke service account sebagai Editor.")
-        st.stop()
-    media = MediaIoBaseUpload(pdf_buffer, mimetype="application/pdf", resumable=False)
-    service.files().update(fileId=fid, media_body=media).execute()
+        # Auto create kalau belum ada
+        pdf_buffer.seek(0)
+        media = MediaIoBaseUpload(pdf_buffer, mimetype="application/pdf", resumable=False)
+        service.files().create(
+            body={"name": target, "parents": [FOLDER_ID]},
+            media_body=media, fields="id"
+        ).execute()
+    else:
+        media = MediaIoBaseUpload(pdf_buffer, mimetype="application/pdf", resumable=False)
+        service.files().update(fileId=fid, media_body=media).execute()
+
+def ensure_all_pdfs_exist(service):
+    """Cek semua file PDF triwulan — auto create placeholder kalau belum ada."""
+    missing = []
+    for nama_triwulan, cfg in TRIWULAN_CONFIG.items():
+        fid = get_file_id(service, cfg["pdf_name"])
+        if not fid:
+            missing.append((nama_triwulan, cfg))
+    if missing:
+        for nama_triwulan, cfg in missing:
+            placeholder = create_placeholder_pdf(cfg["pdf_title"], cfg["header"])
+            upload_pdf(service, placeholder, cfg["pdf_name"])
+    return missing
 
 def upload_screenshot(service, ss_file, bulan, unit):
     try:
@@ -179,37 +215,39 @@ def upload_ss_to_folder(service, ss_file, folder_id, filename):
     ).execute()
 
 # ── Dekorasi halaman PDF ──────────────────────────────────────
-def add_page_decorations(canvas, doc):
-    canvas.saveState()
-    W, H = A4
-    canvas.setFillColor(C_HEADER)
-    canvas.rect(0, H - 1.2*cm, W, 1.2*cm, fill=1, stroke=0)
-    canvas.setFillColor(C_ACCENT)
-    canvas.rect(0, H - 1.42*cm, W, 0.22*cm, fill=1, stroke=0)
-    canvas.setFillColor(C_WHITE)
-    canvas.setFont("Helvetica-Bold", 9)
-    canvas.drawString(1.5*cm, H - 0.82*cm, "LAPORAN IT TRIWULAN I")
-    canvas.setFont("Helvetica", 8)
-    canvas.drawRightString(W - 1.5*cm, H - 0.82*cm, "Teknisi: Isfan")
-    canvas.setFillColor(C_HEADER)
-    canvas.rect(0, 0, W, 0.85*cm, fill=1, stroke=0)
-    canvas.setFillColor(C_ACCENT)
-    canvas.rect(0, 0.85*cm, W, 0.18*cm, fill=1, stroke=0)
-    canvas.setFillColor(C_WHITE)
-    canvas.setFont("Helvetica", 7.5)
-    canvas.drawString(1.5*cm, 0.3*cm, "Divisi IT - Laporan Teknis Internal")
-    canvas.drawRightString(W - 1.5*cm, 0.3*cm, f"Halaman {doc.page}")
-    canvas.restoreState()
+def make_page_decorator(header_text):
+    def add_page_decorations(canvas, doc):
+        canvas.saveState()
+        W, H = A4
+        canvas.setFillColor(C_HEADER)
+        canvas.rect(0, H - 1.2*cm, W, 1.2*cm, fill=1, stroke=0)
+        canvas.setFillColor(C_ACCENT)
+        canvas.rect(0, H - 1.42*cm, W, 0.22*cm, fill=1, stroke=0)
+        canvas.setFillColor(C_WHITE)
+        canvas.setFont("Helvetica-Bold", 9)
+        canvas.drawString(1.5*cm, H - 0.82*cm, header_text)
+        canvas.setFont("Helvetica", 8)
+        canvas.drawRightString(W - 1.5*cm, H - 0.82*cm, "Teknisi: Isfan")
+        canvas.setFillColor(C_HEADER)
+        canvas.rect(0, 0, W, 0.85*cm, fill=1, stroke=0)
+        canvas.setFillColor(C_ACCENT)
+        canvas.rect(0, 0.85*cm, W, 0.18*cm, fill=1, stroke=0)
+        canvas.setFillColor(C_WHITE)
+        canvas.setFont("Helvetica", 7.5)
+        canvas.drawString(1.5*cm, 0.3*cm, "Divisi IT - Laporan Teknis Internal")
+        canvas.drawRightString(W - 1.5*cm, 0.3*cm, f"Halaman {doc.page}")
+        canvas.restoreState()
+    return add_page_decorations
 
 # ── PDF Generator ─────────────────────────────────────────────
-def generate_pdf(all_data):
+def generate_pdf(all_data, pdf_title="Laporan IT Triwulan I", header_text="LAPORAN IT TRIWULAN I"):
     buf = io.BytesIO()
     doc = BaseDocTemplate(buf, pagesize=A4,
                           rightMargin=1.5*cm, leftMargin=1.5*cm,
                           topMargin=3.0*cm, bottomMargin=1.8*cm)
     frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="main")
     doc.addPageTemplates([PageTemplate(id="main", frames=frame,
-                                       onPage=add_page_decorations)])
+                                       onPage=make_page_decorator(header_text))])
 
     s_judul = ParagraphStyle("judul", fontName="Helvetica-Bold", fontSize=15,
                              textColor=C_HEADER, alignment=TA_CENTER, spaceAfter=3)
@@ -227,7 +265,7 @@ def generate_pdf(all_data):
                              textColor=C_TEXT, leading=13)
 
     elements = [Spacer(1, 0.2*cm),
-                Paragraph("Laporan IT Triwulan I", s_judul),
+                Paragraph(pdf_title, s_judul),
                 Paragraph("Teknisi: Isfan &nbsp;|&nbsp; Divisi Teknologi Informasi", s_sub),
                 HRFlowable(width="100%", thickness=2, color=C_ACCENT, spaceAfter=10)]
 
@@ -295,159 +333,36 @@ def show_pdf_preview(pdf_buffer):
         f'style="border:2px solid #2E86C1; border-radius:10px;"></iframe>',
         unsafe_allow_html=True)
 
-
-# ── VoiceBox Design System ────────────────────────────────────
-def inject_voicebox_css():
-    css = """
-@import url('https://fonts.googleapis.com/css2?family=Archivo+Black&family=Work+Sans:wght@400;500;700&display=swap');
-
-html, body, [class*="css"] {
-    font-family: 'Work Sans', -apple-system, Helvetica, sans-serif !important;
-    background-color: #FAFAFA !important;
-    color: #0A0A0A !important;
-}
-.stApp { background-color: #FAFAFA !important; }
-.block-container { padding-top: 2rem !important; max-width: 900px !important; }
-
-h1 {
-    font-family: 'Archivo Black', Impact, sans-serif !important;
-    font-size: 38px !important; font-weight: 400 !important;
-    letter-spacing: -0.02em !important; line-height: 1.1 !important;
-    color: #0A0A0A !important;
-    border-bottom: 4px solid #EF4444 !important;
-    padding-bottom: 12px !important; margin-bottom: 4px !important;
-}
-h2 {
-    font-family: 'Archivo Black', Impact, sans-serif !important;
-    font-size: 24px !important; font-weight: 400 !important;
-    letter-spacing: -0.01em !important; color: #0A0A0A !important;
-    border-left: 4px solid #EF4444 !important;
-    padding-left: 12px !important; margin-bottom: 16px !important;
-}
-h3, h4 {
-    font-family: 'Archivo Black', Impact, sans-serif !important;
-    font-weight: 400 !important; color: #0A0A0A !important;
-}
-
-.stApp [data-testid="stCaptionContainer"] p {
-    font-size: 12px !important; font-weight: 700 !important;
-    text-transform: uppercase !important; letter-spacing: 0.12em !important;
-    color: #525252 !important;
-}
-
-.stTabs [data-baseweb="tab-list"] {
-    background: #FAFAFA !important;
-    border-bottom: 2px solid #0A0A0A !important; gap: 0 !important;
-}
-.stTabs [data-baseweb="tab"] {
-    font-family: 'Work Sans', sans-serif !important;
-    font-size: 12px !important; font-weight: 700 !important;
-    text-transform: uppercase !important; letter-spacing: 0.06em !important;
-    color: #525252 !important; background: transparent !important;
-    border: none !important; border-bottom: 3px solid transparent !important;
-    padding: 10px 20px !important; border-radius: 0 !important;
-}
-.stTabs [aria-selected="true"] {
-    color: #0A0A0A !important;
-    border-bottom: 3px solid #EF4444 !important;
-    background: transparent !important;
-}
-.stTabs [data-baseweb="tab-highlight"] { display: none !important; }
-
-.stTextInput input, .stTextArea textarea {
-    border: 2px solid #D4D4D4 !important; border-radius: 0 !important;
-    background-color: #FAFAFA !important;
-    font-family: 'Work Sans', sans-serif !important;
-    font-size: 14px !important; color: #0A0A0A !important;
-    padding: 8px 14px !important;
-}
-.stTextInput input:focus, .stTextArea textarea:focus {
-    border-color: #0A0A0A !important;
-    box-shadow: 0 0 0 2px #FAFAFA, 0 0 0 4px #0A0A0A !important;
-}
-.stTextInput label, .stTextArea label,
-.stSelectbox label, .stFileUploader label {
-    font-family: 'Work Sans', sans-serif !important;
-    font-size: 12px !important; font-weight: 700 !important;
-    text-transform: uppercase !important; letter-spacing: 0.06em !important;
-    color: #0A0A0A !important; margin-bottom: 6px !important;
-}
-
-.stButton > button, .stFormSubmitButton > button {
-    font-family: 'Work Sans', sans-serif !important;
-    font-size: 13px !important; font-weight: 700 !important;
-    text-transform: uppercase !important; letter-spacing: 0.06em !important;
-    border-radius: 0 !important; border: 2px solid #0A0A0A !important;
-    background-color: #0A0A0A !important; color: #FAFAFA !important;
-    padding: 10px 24px !important;
-    transition: background 0.15s, border-color 0.15s !important;
-}
-.stButton > button:hover, .stFormSubmitButton > button:hover {
-    background-color: #EF4444 !important; border-color: #EF4444 !important;
-    color: #FAFAFA !important;
-}
-.stFormSubmitButton > button[kind="primary"],
-.stButton > button[kind="primary"] {
-    background-color: #EF4444 !important; border-color: #EF4444 !important;
-}
-.stFormSubmitButton > button[kind="primary"]:hover,
-.stButton > button[kind="primary"]:hover {
-    background-color: #DC2626 !important; border-color: #DC2626 !important;
-}
-
-.stExpander {
-    border: 2px solid #E5E5E5 !important; border-radius: 0 !important;
-    background: #FAFAFA !important;
-}
-.stExpander:hover { border-color: #0A0A0A !important; }
-details summary {
-    font-family: 'Work Sans', sans-serif !important;
-    font-size: 12px !important; font-weight: 700 !important;
-    text-transform: uppercase !important; letter-spacing: 0.06em !important;
-    color: #0A0A0A !important; padding: 12px 16px !important;
-}
-
-[data-testid="stVerticalBlockBorderWrapper"] {
-    border: 2px solid #E5E5E5 !important;
-    border-top: 4px solid #EF4444 !important;
-    border-radius: 0 !important; padding: 16px !important;
-    background: #FAFAFA !important;
-}
-
-[data-testid="stFileUploader"] {
-    border: 2px dashed #D4D4D4 !important; border-radius: 0 !important;
-    background: #F5F5F5 !important; padding: 16px !important;
-}
-[data-testid="stFileUploader"]:hover { border-color: #0A0A0A !important; }
-
-.stMarkdown p, .stMarkdown li {
-    font-family: 'Work Sans', sans-serif !important;
-    font-size: 15px !important; line-height: 1.7 !important;
-    color: #0A0A0A !important;
-}
-
-hr { border: none !important; border-top: 2px solid #0A0A0A !important; margin: 24px 0 !important; }
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: #F5F5F5; }
-::-webkit-scrollbar-thumb { background: #0A0A0A; }
-::-webkit-scrollbar-thumb:hover { background: #EF4444; }
-#MainMenu, footer, header { visibility: hidden; }
-"""
-    st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
-    st.markdown(
-        '<link rel="preconnect" href="https://fonts.googleapis.com">'
-        '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
-        '<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Work+Sans:wght@400;500;700&display=swap" rel="stylesheet">',
-        unsafe_allow_html=True
-    )
-
-
 # ── UI ────────────────────────────────────────────────────────
-inject_voicebox_css()
 st.title("🖥️ Buat push dukung bukti EKIN")
 st.caption("Input laporan kendala IT dan simpan otomatis ke Google Drive")
 
 service = get_drive_service()
+
+# ── Auto-create PDF placeholder kalau belum ada di Drive ─────
+if "pdf_init_done" not in st.session_state:
+    with st.spinner("🔍 Mengecek file PDF di Drive..."):
+        missing = ensure_all_pdfs_exist(service)
+        if missing:
+            nama_missing = [cfg["pdf_name"] for _, cfg in missing]
+            st.success(f"✅ Auto-created {len(missing)} file PDF baru di Drive: {', '.join(nama_missing)}")
+    st.session_state.pdf_init_done = True
+
+# ── Pilih Triwulan ────────────────────────────────────────────
+st.divider()
+selected_triwulan = st.selectbox(
+    "📅 Pilih Periode Triwulan",
+    options=list(TRIWULAN_CONFIG.keys()),
+    help="Pilih periode yang sesuai dengan eKinerja — Triwulan 1, Triwulan 2, atau Final/Tahunan"
+)
+cfg       = TRIWULAN_CONFIG[selected_triwulan]
+PDF_NAME  = cfg["pdf_name"]
+PDF_TITLE = cfg["pdf_title"]
+HDR_TEXT  = cfg["header"]
+BULAN_TRIWULAN = cfg["bulan"]
+
+st.info(f"📄 PDF target: `{PDF_NAME}`")
+st.divider()
 
 # ── Session state untuk edit ──────────────────────────────────
 if "edit_index" not in st.session_state:
@@ -460,9 +375,7 @@ tab1, tab2, tab3 = st.tabs(["📝 Input Laporan", "🗂️ Lihat, Edit & Hapus D
 # ══════════════════════════════════════════════════════════════
 with tab1:
     with st.form("form_laporan"):
-        bulan   = st.selectbox("Bulan", [
-            "Januari","Februari","Maret","April","Mei","Juni",
-            "Juli","Agustus","September","Oktober","November","Desember"])
+        bulan   = st.selectbox("Bulan", BULAN_TRIWULAN)
         unit    = st.text_input("Lokasi / Unit")
         kendala = st.text_area("Jenis Kendala / Pekerjaan")
         solusi  = st.text_area("Tindakan / Solusi")
@@ -480,7 +393,7 @@ with tab1:
             data, _ = load_json(service)
             preview  = data + [{"Bulan":bulan,"Unit":unit,"Kendala":kendala,"Solusi":solusi}]
             st.info(f"👁️ Preview {len(preview)} entri (belum tersimpan ke Drive)")
-            show_pdf_preview(generate_pdf(preview))
+            show_pdf_preview(generate_pdf(preview, PDF_TITLE, HDR_TEXT))
 
     if submit_btn:
         if not unit or not kendala or not solusi:
@@ -492,7 +405,7 @@ with tab1:
                     data.append({"Bulan":bulan,"Unit":unit,
                                  "Kendala":kendala,"Solusi":solusi})
                     save_json(service, data, fid)
-                    upload_pdf(service, generate_pdf(data))
+                    upload_pdf(service, generate_pdf(data, PDF_TITLE, HDR_TEXT), PDF_NAME)
                     if ss_file:
                         upload_screenshot(service, ss_file, bulan, unit)
                     st.success(f"✅ Berhasil! **{PDF_NAME}** diperbarui di Drive.")
@@ -512,14 +425,11 @@ with tab2:
     else:
         st.write(f"Total entri: **{len(data)}**")
         if st.button("🔍 Preview PDF Tersimpan"):
-            show_pdf_preview(generate_pdf(data))
+            show_pdf_preview(generate_pdf(data, PDF_TITLE, HDR_TEXT))
 
         st.divider()
 
-        BULAN_OPTIONS = [
-            "Januari","Februari","Maret","April","Mei","Juni",
-            "Juli","Agustus","September","Oktober","November","Desember"
-        ]
+        BULAN_OPTIONS = BULAN_TRIWULAN
 
         for i, entry in enumerate(data):
             # ── Mode EDIT aktif untuk baris ini ──────────────
@@ -559,7 +469,7 @@ with tab2:
                                         "Solusi":  e_solusi,
                                     }
                                     save_json(service, data, fid)
-                                    upload_pdf(service, generate_pdf(data))
+                                    upload_pdf(service, generate_pdf(data, PDF_TITLE, HDR_TEXT), PDF_NAME)
                                     st.success("✅ Entri berhasil diperbarui!")
                                     st.session_state.edit_index = None
                                     st.rerun()
@@ -588,7 +498,7 @@ with tab2:
                         with st.spinner("Menghapus..."):
                             new_data = [e for j, e in enumerate(data) if j != i]
                             save_json(service, new_data, fid)
-                            upload_pdf(service, generate_pdf(new_data))
+                            upload_pdf(service, generate_pdf(new_data, PDF_TITLE, HDR_TEXT), PDF_NAME)
                             st.success("✅ Dihapus!")
                             st.rerun()
 
@@ -626,7 +536,7 @@ with tab2:
                     existing, fid_ex = load_json(service)
                     merged = data_awal + existing
                     save_json(service, merged, fid_ex)
-                    upload_pdf(service, generate_pdf(merged))
+                    upload_pdf(service, generate_pdf(merged, PDF_TITLE, HDR_TEXT), PDF_NAME)
                     st.success(f"✅ Berhasil! Total sekarang {len(merged)} entri. Data lama tetap aman.")
                     st.rerun()
                 except Exception as e:
