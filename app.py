@@ -29,50 +29,74 @@ C_WHITE   = colors.white
 C_GREEN   = colors.HexColor("#1E8449")
 
 # ── Google Drive ─────────────────────────────────────────────
-@st.cache_resource
+import time
+
+def _build_service():
+    creds_dict = dict(st.secrets["gcp_service_account"])
+    creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+    creds = service_account.Credentials.from_service_account_info(
+        creds_dict, scopes=["https://www.googleapis.com/auth/drive"]
+    )
+    return build("drive", "v3", credentials=creds)
+
 def get_drive_service():
     try:
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-        creds = service_account.Credentials.from_service_account_info(
-            creds_dict, scopes=["https://www.googleapis.com/auth/drive"]
-        )
-        return build("drive", "v3", credentials=creds)
+        return _build_service()
     except Exception as e:
         st.error(f"❌ Gagal konek ke Google Drive: {e}")
         st.stop()
 
+def _drive_call(fn, retries=3):
+    for attempt in range(retries):
+        try:
+            return fn()
+        except (BrokenPipeError, ConnectionError, OSError):
+            if attempt < retries - 1:
+                time.sleep(1.5)
+            else:
+                raise
+        except Exception:
+            raise
+
 def get_file_id(service, name, parent_id=FOLDER_ID):
     q = f"name='{name}' and '{parent_id}' in parents and trashed=false"
-    res = service.files().list(q=q, fields="files(id)").execute()
-    items = res.get("files", [])
-    return items[0]["id"] if items else None
+    def call():
+        res = service.files().list(q=q, fields="files(id)").execute()
+        items = res.get("files", [])
+        return items[0]["id"] if items else None
+    try:
+        return _drive_call(call)
+    except (BrokenPipeError, ConnectionError, OSError):
+        try:
+            svc2 = _build_service()
+            res = svc2.files().list(q=q, fields="files(id)").execute()
+            items = res.get("files", [])
+            return items[0]["id"] if items else None
+        except Exception as e:
+            st.error(f"❌ Gagal konek ke Drive: {e}")
+            st.stop()
 
 def load_json(service, retries=3):
-    import time
     fid = get_file_id(service, JSON_NAME)
     if not fid:
         st.error("❌ File `laporan_db.json` tidak ditemukan. Pastikan file sudah ada di folder Drive dan folder sudah di-share ke service account sebagai Editor.")
         st.stop()
-    for attempt in range(retries):
-        try:
-            req = service.files().get_media(fileId=fid)
-            fh  = io.BytesIO()
-            dl  = MediaIoBaseDownload(fh, req)
-            done = False
-            while not done:
-                _, done = dl.next_chunk()
-            raw = fh.getvalue().decode("utf-8").strip()
-            if not raw:
-                return [], fid
-            return json.loads(raw), fid
-        except (BrokenPipeError, ConnectionError, OSError) as e:
-            if attempt < retries - 1:
-                time.sleep(1.5)
-                continue
-            st.error(f"❌ Gagal konek ke Drive setelah {retries}x coba: {e}")
-            st.stop()
-
+    def call():
+        req = service.files().get_media(fileId=fid)
+        fh  = io.BytesIO()
+        dl  = MediaIoBaseDownload(fh, req)
+        done = False
+        while not done:
+            _, done = dl.next_chunk()
+        raw = fh.getvalue().decode("utf-8").strip()
+        if not raw:
+            return [], fid
+        return json.loads(raw), fid
+    try:
+        return _drive_call(call, retries)
+    except (BrokenPipeError, ConnectionError, OSError) as e:
+        st.error(f"❌ Koneksi ke Drive terputus. Coba refresh halaman.")
+        st.stop()
 def save_json(service, data, fid=None):
     if not fid:
         st.error("❌ File `laporan_db.json` tidak ditemukan. Cek folder Drive.")
