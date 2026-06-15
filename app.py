@@ -15,27 +15,27 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT
 
 # --- KONFIGURASI ---
 FOLDER_ID = "1tpSWDgfMEac2ktTrUNMr7u7Y5V7tAZwa"
-JSON_NAME = "laporan_db.json"
-
 TRIWULAN_CONFIG = {
     "Triwulan 1 (Jan–Mar)": {
         "pdf_name":  "Laporan_IT_Triwulan_1_Isfan.pdf",
         "pdf_title": "Laporan IT Triwulan I",
         "header":    "LAPORAN IT TRIWULAN I",
+        "json_name": "laporan_db.json",
         "bulan":     ["Januari", "Februari", "Maret"],
     },
     "Triwulan 2 (Apr–Jun)": {
         "pdf_name":  "Laporan_IT_Triwulan_2_Isfan.pdf",
         "pdf_title": "Laporan IT Triwulan II",
         "header":    "LAPORAN IT TRIWULAN II",
+        "json_name": "laporan_db_tw2.json",
         "bulan":     ["April", "Mei", "Juni"],
     },
     "Triwulan Final / Tahunan": {
         "pdf_name":  "Laporan_IT_Triwulan_Final_Isfan.pdf",
         "pdf_title": "Laporan IT Tahunan (Final)",
         "header":    "LAPORAN IT TAHUNAN (FINAL)",
-        "bulan":     ["Januari","Februari","Maret","April","Mei","Juni",
-                      "Juli","Agustus","September","Oktober","November","Desember"],
+        "json_name": "laporan_db_final.json",
+        "bulan":     ["Juli","Agustus","September","Oktober","November","Desember"],
     },
 }
 
@@ -68,10 +68,10 @@ def get_file_id(service, name, parent_id=FOLDER_ID):
     items = res.get("files", [])
     return items[0]["id"] if items else None
 
-def load_json(service):
-    fid = get_file_id(service, JSON_NAME)
+def load_json(service, json_name="laporan_db.json"):
+    fid = get_file_id(service, json_name)
     if not fid:
-        st.error("❌ File `laporan_db.json` tidak ditemukan. Pastikan file sudah ada di folder Drive dan folder sudah di-share ke service account sebagai Editor.")
+        st.error(f"❌ File `{json_name}` tidak ditemukan. Pastikan file sudah ada di folder Drive dan folder sudah di-share ke service account sebagai Editor.")
         st.stop()
     req = service.files().get_media(fileId=fid)
     fh  = io.BytesIO()
@@ -92,61 +92,27 @@ def save_json(service, data, fid=None):
     media = MediaIoBaseUpload(io.BytesIO(b), mimetype="application/json", resumable=False)
     service.files().update(fileId=fid, media_body=media).execute()
 
-def create_placeholder_pdf(pdf_title, header_text):
-    """Buat PDF placeholder 1 halaman untuk file yang belum ada di Drive."""
-    buf = io.BytesIO()
-    doc = BaseDocTemplate(buf, pagesize=A4,
-                          rightMargin=1.5*cm, leftMargin=1.5*cm,
-                          topMargin=3.0*cm, bottomMargin=1.8*cm)
-    frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="main")
-    doc.addPageTemplates([PageTemplate(id="main", frames=frame,
-                                       onPage=make_page_decorator(header_text))])
-    s_judul = ParagraphStyle("judul", fontName="Helvetica-Bold", fontSize=15,
-                             textColor=C_HEADER, alignment=TA_CENTER, spaceAfter=12)
-    s_info  = ParagraphStyle("info",  fontName="Helvetica", fontSize=10,
-                             textColor=C_TEXT, alignment=TA_CENTER, leading=16)
-    elements = [
-        Spacer(1, 2*cm),
-        Paragraph(pdf_title, s_judul),
-        Spacer(1, 0.5*cm),
-        HRFlowable(width="60%", thickness=2, color=C_ACCENT, spaceAfter=20),
-        Spacer(1, 0.5*cm),
-        Paragraph("File ini akan diperbarui otomatis", s_info),
-        Paragraph("melalui aplikasi EKIN IT Support.", s_info),
-        Spacer(1, 0.3*cm),
-        Paragraph("Teknisi: Isfan | Divisi Teknologi Informasi", s_info),
-        Paragraph("RSUD Kota Cilegon", s_info),
-    ]
-    doc.build(elements)
-    buf.seek(0)
-    return buf
-
 def upload_pdf(service, pdf_buffer, pdf_name=None):
     target = pdf_name or "Laporan_IT_Triwulan_1_Isfan.pdf"
     fid = get_file_id(service, target)
     if not fid:
-        # Auto create kalau belum ada
-        pdf_buffer.seek(0)
-        media = MediaIoBaseUpload(pdf_buffer, mimetype="application/pdf", resumable=False)
-        service.files().create(
-            body={"name": target, "parents": [FOLDER_ID]},
-            media_body=media, fields="id"
-        ).execute()
-    else:
-        media = MediaIoBaseUpload(pdf_buffer, mimetype="application/pdf", resumable=False)
-        service.files().update(fileId=fid, media_body=media).execute()
+        st.error(
+            f"❌ File `{target}` belum ada di folder Drive.\n\n"
+            f"Upload dulu file PDF kosong dengan nama tersebut ke folder Drive, "
+            f"lalu refresh app ini."
+        )
+        st.stop()
+    media = MediaIoBaseUpload(pdf_buffer, mimetype="application/pdf", resumable=False)
+    service.files().update(fileId=fid, media_body=media).execute()
 
-def ensure_all_pdfs_exist(service):
-    """Cek semua file PDF triwulan — auto create placeholder kalau belum ada."""
+def check_missing_files(service):
+    """Return list file (PDF/JSON) yang belum ada di Drive."""
     missing = []
     for nama_triwulan, cfg in TRIWULAN_CONFIG.items():
-        fid = get_file_id(service, cfg["pdf_name"])
-        if not fid:
-            missing.append((nama_triwulan, cfg))
-    if missing:
-        for nama_triwulan, cfg in missing:
-            placeholder = create_placeholder_pdf(cfg["pdf_title"], cfg["header"])
-            upload_pdf(service, placeholder, cfg["pdf_name"])
+        if not get_file_id(service, cfg["pdf_name"]):
+            missing.append(f"PDF: `{cfg['pdf_name']}` ({nama_triwulan})")
+        if not get_file_id(service, cfg["json_name"]):
+            missing.append(f"JSON: `{cfg['json_name']}` ({nama_triwulan})")
     return missing
 
 def upload_screenshot(service, ss_file, bulan, unit):
@@ -339,13 +305,16 @@ st.caption("Input laporan kendala IT dan simpan otomatis ke Google Drive")
 
 service = get_drive_service()
 
-# ── Auto-create PDF placeholder kalau belum ada di Drive ─────
+# ── Cek PDF yang belum ada di Drive ──────────────────────────
 if "pdf_init_done" not in st.session_state:
     with st.spinner("🔍 Mengecek file PDF di Drive..."):
-        missing = ensure_all_pdfs_exist(service)
-        if missing:
-            nama_missing = [cfg["pdf_name"] for _, cfg in missing]
-            st.success(f"✅ Auto-created {len(missing)} file PDF baru di Drive: {', '.join(nama_missing)}")
+        missing_files = check_missing_files(service)
+        if missing_files:
+            st.warning(
+                "⚠️ File berikut belum ada di folder Drive:\n\n" +
+                "\n".join([f"- {f}" for f in missing_files]) +
+                "\n\nUpload file yang kurang ke folder Drive dulu, lalu refresh."
+            )
     st.session_state.pdf_init_done = True
 
 # ── Pilih Triwulan ────────────────────────────────────────────
@@ -359,6 +328,7 @@ cfg       = TRIWULAN_CONFIG[selected_triwulan]
 PDF_NAME  = cfg["pdf_name"]
 PDF_TITLE = cfg["pdf_title"]
 HDR_TEXT  = cfg["header"]
+JSON_NAME = cfg["json_name"]
 BULAN_TRIWULAN = cfg["bulan"]
 
 st.info(f"📄 PDF target: `{PDF_NAME}`")
@@ -390,7 +360,7 @@ with tab1:
         if not unit or not kendala or not solusi:
             st.warning("⚠️ Isi semua field dulu untuk preview.")
         else:
-            data, _ = load_json(service)
+            data, _ = load_json(service, JSON_NAME)
             preview  = data + [{"Bulan":bulan,"Unit":unit,"Kendala":kendala,"Solusi":solusi}]
             st.info(f"👁️ Preview {len(preview)} entri (belum tersimpan ke Drive)")
             show_pdf_preview(generate_pdf(preview, PDF_TITLE, HDR_TEXT))
@@ -401,7 +371,7 @@ with tab1:
         else:
             with st.spinner("Menyimpan ke Drive..."):
                 try:
-                    data, fid = load_json(service)
+                    data, fid = load_json(service, JSON_NAME)
                     data.append({"Bulan":bulan,"Unit":unit,
                                  "Kendala":kendala,"Solusi":solusi})
                     save_json(service, data, fid)
@@ -418,7 +388,7 @@ with tab1:
 # ══════════════════════════════════════════════════════════════
 with tab2:
     st.subheader("📋 Data Laporan Tersimpan")
-    data, fid = load_json(service)
+    data, fid = load_json(service, JSON_NAME)
 
     if not data:
         st.info("Belum ada data tersimpan.")
@@ -533,7 +503,7 @@ with tab2:
             ]
             with st.spinner("Menggabungkan data..."):
                 try:
-                    existing, fid_ex = load_json(service)
+                    existing, fid_ex = load_json(service, JSON_NAME)
                     merged = data_awal + existing
                     save_json(service, merged, fid_ex)
                     upload_pdf(service, generate_pdf(merged, PDF_TITLE, HDR_TEXT), PDF_NAME)
