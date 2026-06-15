@@ -48,21 +48,30 @@ def get_file_id(service, name, parent_id=FOLDER_ID):
     items = res.get("files", [])
     return items[0]["id"] if items else None
 
-def load_json(service):
+def load_json(service, retries=3):
+    import time
     fid = get_file_id(service, JSON_NAME)
     if not fid:
         st.error("❌ File `laporan_db.json` tidak ditemukan. Pastikan file sudah ada di folder Drive dan folder sudah di-share ke service account sebagai Editor.")
         st.stop()
-    req = service.files().get_media(fileId=fid)
-    fh  = io.BytesIO()
-    dl  = MediaIoBaseDownload(fh, req)
-    done = False
-    while not done:
-        _, done = dl.next_chunk()
-    raw = fh.getvalue().decode("utf-8").strip()
-    if not raw:
-        return [], fid
-    return json.loads(raw), fid
+    for attempt in range(retries):
+        try:
+            req = service.files().get_media(fileId=fid)
+            fh  = io.BytesIO()
+            dl  = MediaIoBaseDownload(fh, req)
+            done = False
+            while not done:
+                _, done = dl.next_chunk()
+            raw = fh.getvalue().decode("utf-8").strip()
+            if not raw:
+                return [], fid
+            return json.loads(raw), fid
+        except (BrokenPipeError, ConnectionError, OSError) as e:
+            if attempt < retries - 1:
+                time.sleep(1.5)
+                continue
+            st.error(f"❌ Gagal konek ke Drive setelah {retries}x coba: {e}")
+            st.stop()
 
 def save_json(service, data, fid=None):
     if not fid:
