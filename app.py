@@ -262,7 +262,289 @@ def show_pdf_preview(pdf_buffer):
         f'style="border:2px solid #2E86C1; border-radius:10px;"></iframe>',
         unsafe_allow_html=True)
 
+
+# ── VoiceBox Design System ────────────────────────────────────
+def inject_voicebox_css():
+    st.markdown("""
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Work+Sans:wght@400;500;700&family=Space+Mono&display=swap" rel="stylesheet">
+    <style>
+    /* ── Reset & Base ── */
+    html, body, [class*="css"] {
+        font-family: 'Work Sans', -apple-system, 'Segoe UI', Helvetica, sans-serif !important;
+        background-color: #FAFAFA !important;
+        color: #0A0A0A !important;
+    }
+
+    /* ── App container ── */
+    .stApp {
+        background-color: #FAFAFA !important;
+    }
+    .block-container {
+        padding-top: 2rem !important;
+        max-width: 900px !important;
+    }
+
+    /* ── Title & Headers ── */
+    h1 {
+        font-family: 'Archivo Black', Impact, 'Arial Black', sans-serif !important;
+        font-size: 38px !important;
+        font-weight: 400 !important;
+        letter-spacing: -0.02em !important;
+        line-height: 1.1 !important;
+        color: #0A0A0A !important;
+        border-bottom: 4px solid #EF4444 !important;
+        padding-bottom: 12px !important;
+        margin-bottom: 4px !important;
+    }
+    h2 {
+        font-family: 'Archivo Black', Impact, 'Arial Black', sans-serif !important;
+        font-size: 24px !important;
+        font-weight: 400 !important;
+        letter-spacing: -0.01em !important;
+        color: #0A0A0A !important;
+        border-left: 4px solid #EF4444 !important;
+        padding-left: 12px !important;
+        margin-bottom: 16px !important;
+    }
+    h3, h4 {
+        font-family: 'Archivo Black', Impact, 'Arial Black', sans-serif !important;
+        font-weight: 400 !important;
+        color: #0A0A0A !important;
+    }
+
+    /* ── Caption / subtitle ── */
+    .stApp [data-testid="stCaptionContainer"] p,
+    [data-testid="stCaptionContainer"] {
+        font-family: 'Work Sans', sans-serif !important;
+        font-size: 12px !important;
+        font-weight: 700 !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.12em !important;
+        color: #525252 !important;
+    }
+
+    /* ── Tabs ── */
+    .stTabs [data-baseweb="tab-list"] {
+        background: #FAFAFA !important;
+        border-bottom: 2px solid #0A0A0A !important;
+        gap: 0 !important;
+    }
+    .stTabs [data-baseweb="tab"] {
+        font-family: 'Work Sans', sans-serif !important;
+        font-size: 12px !important;
+        font-weight: 700 !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.06em !important;
+        color: #525252 !important;
+        background: transparent !important;
+        border: none !important;
+        border-bottom: 3px solid transparent !important;
+        padding: 10px 20px !important;
+        border-radius: 0 !important;
+    }
+    .stTabs [aria-selected="true"] {
+        color: #0A0A0A !important;
+        border-bottom: 3px solid #EF4444 !important;
+        background: transparent !important;
+    }
+    .stTabs [data-baseweb="tab-highlight"] {
+        display: none !important;
+    }
+
+    /* ── Inputs ── */
+    .stTextInput input,
+    .stTextArea textarea,
+    .stSelectbox [data-baseweb="select"] > div,
+    .stMultiSelect [data-baseweb="select"] > div {
+        border: 2px solid #D4D4D4 !important;
+        border-radius: 0 !important;
+        background-color: #FAFAFA !important;
+        font-family: 'Work Sans', sans-serif !important;
+        font-size: 14px !important;
+        color: #0A0A0A !important;
+        padding: 8px 14px !important;
+    }
+    .stTextInput input:focus,
+    .stTextArea textarea:focus {
+        border-color: #0A0A0A !important;
+        box-shadow: 0 0 0 2px #FAFAFA, 0 0 0 4px #0A0A0A !important;
+    }
+
+    /* Input labels */
+    .stTextInput label,
+    .stTextArea label,
+    .stSelectbox label,
+    .stFileUploader label {
+        font-family: 'Work Sans', sans-serif !important;
+        font-size: 12px !important;
+        font-weight: 700 !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.06em !important;
+        color: #0A0A0A !important;
+        margin-bottom: 6px !important;
+    }
+
+    /* ── Buttons ── */
+    .stButton > button,
+    .stFormSubmitButton > button {
+        font-family: 'Work Sans', sans-serif !important;
+        font-size: 13px !important;
+        font-weight: 700 !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.06em !important;
+        border-radius: 0 !important;
+        border: 2px solid #0A0A0A !important;
+        background-color: #0A0A0A !important;
+        color: #FAFAFA !important;
+        padding: 10px 24px !important;
+        transition: background 0.15s, border-color 0.15s !important;
+    }
+    .stButton > button:hover,
+    .stFormSubmitButton > button:hover {
+        background-color: #EF4444 !important;
+        border-color: #EF4444 !important;
+        color: #FAFAFA !important;
+    }
+
+    /* Primary button (type=primary) */
+    .stFormSubmitButton > button[kind="primary"],
+    .stButton > button[kind="primary"] {
+        background-color: #EF4444 !important;
+        border-color: #EF4444 !important;
+    }
+    .stFormSubmitButton > button[kind="primary"]:hover,
+    .stButton > button[kind="primary"]:hover {
+        background-color: #DC2626 !important;
+        border-color: #DC2626 !important;
+    }
+
+    /* Secondary / outline button */
+    .stButton > button[kind="secondary"] {
+        background-color: transparent !important;
+        border: 2px solid #0A0A0A !important;
+        color: #0A0A0A !important;
+    }
+    .stButton > button[kind="secondary"]:hover {
+        background-color: #0A0A0A !important;
+        color: #FAFAFA !important;
+    }
+
+    /* ── Expander ── */
+    .stExpander {
+        border: 2px solid #E5E5E5 !important;
+        border-radius: 0 !important;
+        background: #FAFAFA !important;
+    }
+    .stExpander:hover {
+        border-color: #0A0A0A !important;
+    }
+    details summary {
+        font-family: 'Work Sans', sans-serif !important;
+        font-size: 12px !important;
+        font-weight: 700 !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.06em !important;
+        color: #0A0A0A !important;
+        padding: 12px 16px !important;
+    }
+
+    /* ── Alerts / Info / Success / Warning / Error ── */
+    [data-testid="stAlert"] {
+        border-radius: 0 !important;
+        border-left: 4px solid !important;
+        font-family: 'Work Sans', sans-serif !important;
+        font-size: 14px !important;
+    }
+    /* info */
+    [data-testid="stAlert"][data-baseweb="notification"][kind="info"] {
+        background: #F5F5F5 !important;
+        border-left-color: #0A0A0A !important;
+        color: #0A0A0A !important;
+    }
+    /* success */
+    [data-testid="stAlert"][data-baseweb="notification"][kind="positive"] {
+        background: #F0FDF4 !important;
+        border-left-color: #16A34A !important;
+        color: #14532D !important;
+    }
+    /* warning */
+    [data-testid="stAlert"][data-baseweb="notification"][kind="warning"] {
+        background: #FEFCE8 !important;
+        border-left-color: #CA8A04 !important;
+        color: #713F12 !important;
+    }
+    /* error */
+    [data-testid="stAlert"][data-baseweb="notification"][kind="negative"] {
+        background: #FEF2F2 !important;
+        border-left-color: #EF4444 !important;
+        color: #7F1D1D !important;
+    }
+
+    /* ── Divider ── */
+    hr {
+        border: none !important;
+        border-top: 2px solid #0A0A0A !important;
+        margin: 24px 0 !important;
+    }
+
+    /* ── Container / Card (st.container border=True) ── */
+    [data-testid="stVerticalBlockBorderWrapper"] {
+        border: 2px solid #E5E5E5 !important;
+        border-top: 4px solid #EF4444 !important;
+        border-radius: 0 !important;
+        padding: 16px !important;
+        background: #FAFAFA !important;
+    }
+
+    /* ── Spinner ── */
+    .stSpinner > div {
+        border-top-color: #EF4444 !important;
+    }
+
+    /* ── Selectbox dropdown ── */
+    [data-baseweb="popover"] ul {
+        border: 2px solid #0A0A0A !important;
+        border-radius: 0 !important;
+        background: #FAFAFA !important;
+    }
+    [data-baseweb="popover"] li:hover {
+        background: #F5F5F5 !important;
+    }
+
+    /* ── File uploader ── */
+    [data-testid="stFileUploader"] {
+        border: 2px dashed #D4D4D4 !important;
+        border-radius: 0 !important;
+        background: #F5F5F5 !important;
+        padding: 16px !important;
+    }
+    [data-testid="stFileUploader"]:hover {
+        border-color: #0A0A0A !important;
+    }
+
+    /* ── Markdown text ── */
+    .stMarkdown p, .stMarkdown li {
+        font-family: 'Work Sans', sans-serif !important;
+        font-size: 15px !important;
+        line-height: 1.7 !important;
+        color: #0A0A0A !important;
+    }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #F5F5F5; }
+    ::-webkit-scrollbar-thumb { background: #0A0A0A; }
+    ::-webkit-scrollbar-thumb:hover { background: #EF4444; }
+
+    /* ── Hide Streamlit branding ── */
+    #MainMenu, footer, header { visibility: hidden; }
+    </style>
+    """, unsafe_allow_html=True)
+
 # ── UI ────────────────────────────────────────────────────────
+inject_voicebox_css()
 st.title("🖥️ Buat push dukung bukti EKIN")
 st.caption("Input laporan kendala IT dan simpan otomatis ke Google Drive")
 
