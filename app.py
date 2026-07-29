@@ -1,3 +1,4 @@
+import re
 import streamlit as st
 import requests
 
@@ -14,6 +15,15 @@ TRIWULAN_OPTIONS = {
     "Triwulan 2 (Apr–Jun)": "tw2",
     "Triwulan Final / Tahunan": "final",
 }
+
+
+def get_drive_embed_url(web_view_link: str):
+    """Ubah webViewLink Google Drive ('.../file/d/<ID>/view...') jadi URL embed preview."""
+    match = re.search(r"/d/([a-zA-Z0-9_-]+)", web_view_link)
+    if not match:
+        return None
+    file_id = match.group(1)
+    return f"https://drive.google.com/file/d/{file_id}/preview"
 
 # ══════════════════════════════════════════════════════════════
 # UI
@@ -93,7 +103,18 @@ if proses_btn:
 
                     web_view_link = result.get("webViewLink")
                     if web_view_link:
-                        st.markdown("### 📄 Laporan PDF siap dibuka:")
+                        st.markdown("### 📄 Preview Laporan PDF")
+                        embed_url = get_drive_embed_url(web_view_link)
+                        if embed_url:
+                            st.markdown(
+                                f'<iframe src="{embed_url}" width="100%" height="560px" '
+                                f'style="border:2px solid #2E86C1; border-radius:10px;" '
+                                f'allow="autoplay"></iframe>',
+                                unsafe_allow_html=True,
+                            )
+                        else:
+                            st.info("Tidak bisa membuat preview otomatis dari link ini, "
+                                     "silakan buka manual lewat tombol di bawah.")
                         st.link_button("📂 Buka PDF di Google Drive", web_view_link, use_container_width=True)
                     else:
                         st.info("Laporan berhasil diproses, tetapi field `webViewLink` tidak "
