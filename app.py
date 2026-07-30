@@ -16,14 +16,14 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT
 # --- KONFIGURASI ---
 FOLDER_ID = "1tpSWDgfMEac2ktTrUNMr7u7Y5V7tAZwa"
 TRIWULAN_CONFIG = {
-    "Triwulan 1 (Janâ€“Mar)": {
+    "Triwulan 1 (Jan–Mar)": {
         "pdf_name":  "Laporan_IT_Triwulan_1_Isfan.pdf",
         "pdf_title": "Laporan IT Triwulan I",
         "header":    "LAPORAN IT TRIWULAN I",
         "json_name": "laporan_db.json",
         "bulan":     ["Januari", "Februari", "Maret"],
     },
-    "Triwulan 2 (Aprâ€“Jun)": {
+    "Triwulan 2 (Apr–Jun)": {
         "pdf_name":  "Laporan_IT_Triwulan_2_Isfan.pdf",
         "pdf_title": "Laporan IT Triwulan II",
         "header":    "LAPORAN IT TRIWULAN II",
@@ -48,7 +48,7 @@ C_TEXT    = colors.HexColor("#1C2833")
 C_WHITE   = colors.white
 C_GREEN   = colors.HexColor("#1E8449")
 
-# â”€â”€ Google Drive â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Google Drive ─────────────────────────────────────────────
 @st.cache_resource
 def get_drive_service():
     try:
@@ -59,7 +59,7 @@ def get_drive_service():
         )
         return build("drive", "v3", credentials=creds)
     except Exception as e:
-        st.error(f"âŒ Gagal konek ke Google Drive: {e}")
+        st.error(f"❌ Gagal konek ke Google Drive: {e}")
         st.stop()
 
 def get_file_id(service, name, parent_id=FOLDER_ID):
@@ -71,7 +71,7 @@ def get_file_id(service, name, parent_id=FOLDER_ID):
 def load_json(service, json_name="laporan_db.json"):
     fid = get_file_id(service, json_name)
     if not fid:
-        st.error(f"âŒ File `{json_name}` tidak ditemukan. Pastikan file sudah ada di folder Drive dan folder sudah di-share ke service account sebagai Editor.")
+        st.error(f"❌ File `{json_name}` tidak ditemukan. Pastikan file sudah ada di folder Drive dan folder sudah di-share ke service account sebagai Editor.")
         st.stop()
     req = service.files().get_media(fileId=fid)
     fh  = io.BytesIO()
@@ -86,7 +86,7 @@ def load_json(service, json_name="laporan_db.json"):
 
 def save_json(service, data, fid=None):
     if not fid:
-        st.error("âŒ File `laporan_db.json` tidak ditemukan. Cek folder Drive.")
+        st.error("❌ File `laporan_db.json` tidak ditemukan. Cek folder Drive.")
         st.stop()
     b = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
     media = MediaIoBaseUpload(io.BytesIO(b), mimetype="application/json", resumable=False)
@@ -97,7 +97,7 @@ def upload_pdf(service, pdf_buffer, pdf_name=None):
     fid = get_file_id(service, target)
     if not fid:
         st.error(
-            f"âŒ File `{target}` belum ada di folder Drive.\n\n"
+            f"❌ File `{target}` belum ada di folder Drive.\n\n"
             f"Upload dulu file PDF kosong dengan nama tersebut ke folder Drive, "
             f"lalu refresh app ini."
         )
@@ -117,7 +117,7 @@ def check_missing_files(service):
 
 
 
-# â”€â”€ Dekorasi halaman PDF â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Dekorasi halaman PDF ──────────────────────────────────────
 def make_page_decorator(header_text):
     def add_page_decorations(canvas, doc):
         canvas.saveState()
@@ -142,7 +142,7 @@ def make_page_decorator(header_text):
         canvas.restoreState()
     return add_page_decorations
 
-# â”€â”€ PDF Generator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── PDF Generator ─────────────────────────────────────────────
 def generate_pdf(all_data, pdf_title="Laporan IT Triwulan I", header_text="LAPORAN IT TRIWULAN I"):
     buf = io.BytesIO()
     doc = BaseDocTemplate(buf, pagesize=A4,
@@ -236,30 +236,30 @@ def show_pdf_preview(pdf_buffer):
         f'style="border:2px solid #2E86C1; border-radius:10px;"></iframe>',
         unsafe_allow_html=True)
 
-# â”€â”€ UI â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-st.title("ðŸ–¥ï¸ Buat push dukung bukti EKIN")
+# ── UI ────────────────────────────────────────────────────────
+st.title("🖥️ Buat push dukung bukti EKIN")
 st.caption("Input laporan kendala IT dan simpan otomatis ke Google Drive")
 
 service = get_drive_service()
 
-# â”€â”€ Cek PDF yang belum ada di Drive â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Cek PDF yang belum ada di Drive ──────────────────────────
 if "pdf_init_done" not in st.session_state:
-    with st.spinner("ðŸ” Mengecek file PDF di Drive..."):
+    with st.spinner("🔍 Mengecek file PDF di Drive..."):
         missing_files = check_missing_files(service)
         if missing_files:
             st.warning(
-                "âš ï¸ File berikut belum ada di folder Drive:\n\n" +
+                "⚠️ File berikut belum ada di folder Drive:\n\n" +
                 "\n".join([f"- {f}" for f in missing_files]) +
                 "\n\nUpload file yang kurang ke folder Drive dulu, lalu refresh."
             )
     st.session_state.pdf_init_done = True
 
-# â”€â”€ Pilih Triwulan â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Pilih Triwulan ────────────────────────────────────────────
 st.divider()
 selected_triwulan = st.selectbox(
-    "ðŸ“… Pilih Periode Triwulan",
+    "📅 Pilih Periode Triwulan",
     options=list(TRIWULAN_CONFIG.keys()),
-    help="Pilih periode yang sesuai dengan eKinerja â€” Triwulan 1, Triwulan 2, atau Final/Tahunan"
+    help="Pilih periode yang sesuai dengan eKinerja — Triwulan 1, Triwulan 2, atau Final/Tahunan"
 )
 cfg       = TRIWULAN_CONFIG[selected_triwulan]
 PDF_NAME  = cfg["pdf_name"]
@@ -268,18 +268,18 @@ HDR_TEXT  = cfg["header"]
 JSON_NAME = cfg["json_name"]
 BULAN_TRIWULAN = cfg["bulan"]
 
-st.info(f"ðŸ“„ PDF target: `{PDF_NAME}`")
+st.info(f"📄 PDF target: `{PDF_NAME}`")
 st.divider()
 
-# â”€â”€ Session state untuk edit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Session state untuk edit ──────────────────────────────────
 if "edit_index" not in st.session_state:
     st.session_state.edit_index = None
 
-tab1, tab2 = st.tabs(["ðŸ“ Input Laporan", "ðŸ—‚ï¸ Lihat, Edit & Hapus Data"])
+tab1, tab2 = st.tabs(["📝 Input Laporan", "🗂️ Lihat, Edit & Hapus Data"])
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# TAB 1 â€” CREATE
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════
+# TAB 1 — CREATE
+# ══════════════════════════════════════════════════════════════
 with tab1:
     with st.form("form_laporan"):
         bulan   = st.selectbox("Bulan", BULAN_TRIWULAN)
@@ -288,21 +288,21 @@ with tab1:
         solusi  = st.text_area("Tindakan / Solusi")
         ss_file = None
         col1, col2 = st.columns(2)
-        with col1: preview_btn = st.form_submit_button("ðŸ” Preview PDF")
-        with col2: submit_btn  = st.form_submit_button("âœ… Konfirmasi & Update Laporan")
+        with col1: preview_btn = st.form_submit_button("🔍 Preview PDF")
+        with col2: submit_btn  = st.form_submit_button("✅ Konfirmasi & Update Laporan")
 
     if preview_btn:
         if not unit or not kendala or not solusi:
-            st.warning("âš ï¸ Isi semua field dulu untuk preview.")
+            st.warning("⚠️ Isi semua field dulu untuk preview.")
         else:
             data, _ = load_json(service, JSON_NAME)
             preview  = data + [{"Bulan":bulan,"Unit":unit,"Kendala":kendala,"Solusi":solusi}]
-            st.info(f"ðŸ‘ï¸ Preview {len(preview)} entri (belum tersimpan ke Drive)")
+            st.info(f"👁️ Preview {len(preview)} entri (belum tersimpan ke Drive)")
             show_pdf_preview(generate_pdf(preview, PDF_TITLE, HDR_TEXT))
 
     if submit_btn:
         if not unit or not kendala or not solusi:
-            st.warning("âš ï¸ Mohon isi semua field sebelum submit.")
+            st.warning("⚠️ Mohon isi semua field sebelum submit.")
         else:
             with st.spinner("Menyimpan ke Drive..."):
                 try:
@@ -312,23 +312,23 @@ with tab1:
                     save_json(service, data, fid)
                     upload_pdf(service, generate_pdf(data, PDF_TITLE, HDR_TEXT), PDF_NAME)
 
-                    st.success(f"âœ… Berhasil! **{PDF_NAME}** diperbarui di Drive.")
+                    st.success(f"✅ Berhasil! **{PDF_NAME}** diperbarui di Drive.")
                     st.balloons()
                 except Exception as e:
-                    st.error(f"âŒ Terjadi kesalahan: {e}")
+                    st.error(f"❌ Terjadi kesalahan: {e}")
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# TAB 2 â€” READ / UPDATE / DELETE
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════
+# TAB 2 — READ / UPDATE / DELETE
+# ══════════════════════════════════════════════════════════════
 with tab2:
-    st.subheader("ðŸ“‹ Data Laporan Tersimpan")
+    st.subheader("📋 Data Laporan Tersimpan")
     data, fid = load_json(service, JSON_NAME)
 
     if not data:
         st.info("Belum ada data tersimpan.")
     else:
         st.write(f"Total entri: **{len(data)}**")
-        if st.button("ðŸ” Preview PDF Tersimpan"):
+        if st.button("🔍 Preview PDF Tersimpan"):
             show_pdf_preview(generate_pdf(data, PDF_TITLE, HDR_TEXT))
 
         st.divider()
@@ -336,10 +336,10 @@ with tab2:
         BULAN_OPTIONS = BULAN_TRIWULAN
 
         for i, entry in enumerate(data):
-            # â”€â”€ Mode EDIT aktif untuk baris ini â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── Mode EDIT aktif untuk baris ini ──────────────
             if st.session_state.edit_index == i:
                 with st.container(border=True):
-                    st.markdown(f"#### âœï¸ Edit Entri #{i+1}")
+                    st.markdown(f"#### ✏️ Edit Entri #{i+1}")
                     with st.form(key=f"form_edit_{i}"):
                         e_bulan = st.selectbox(
                             "Bulan",
@@ -355,14 +355,14 @@ with tab2:
                                                  value=entry.get("Solusi",""))
                         col_save, col_cancel = st.columns(2)
                         with col_save:
-                            save_edit = st.form_submit_button("ðŸ’¾ Simpan Perubahan",
+                            save_edit = st.form_submit_button("💾 Simpan Perubahan",
                                                               type="primary")
                         with col_cancel:
-                            cancel_edit = st.form_submit_button("âœ– Batal")
+                            cancel_edit = st.form_submit_button("✖ Batal")
 
                     if save_edit:
                         if not e_unit or not e_kendala or not e_solusi:
-                            st.warning("âš ï¸ Semua field harus diisi.")
+                            st.warning("⚠️ Semua field harus diisi.")
                         else:
                             with st.spinner("Menyimpan perubahan ke Drive..."):
                                 try:
@@ -374,44 +374,44 @@ with tab2:
                                     }
                                     save_json(service, data, fid)
                                     upload_pdf(service, generate_pdf(data, PDF_TITLE, HDR_TEXT), PDF_NAME)
-                                    st.success("âœ… Entri berhasil diperbarui!")
+                                    st.success("✅ Entri berhasil diperbarui!")
                                     st.session_state.edit_index = None
                                     st.rerun()
                                 except Exception as e:
-                                    st.error(f"âŒ Gagal menyimpan: {e}")
+                                    st.error(f"❌ Gagal menyimpan: {e}")
 
                     if cancel_edit:
                         st.session_state.edit_index = None
                         st.rerun()
 
-            # â”€â”€ Mode NORMAL (tampil biasa + tombol Edit/Hapus) â”€
+            # ── Mode NORMAL (tampil biasa + tombol Edit/Hapus) ─
             else:
                 c1, c2, c3 = st.columns([5, 1, 1])
                 with c1:
                     st.markdown(
                         f"**{i+1}. {entry.get('Bulan','-')} | {entry.get('Unit','-')}**  \n"
-                        f"ðŸ”§ {entry.get('Kendala','-')}  \n"
-                        f"âœ… {entry.get('Solusi','-')}"
+                        f"🔧 {entry.get('Kendala','-')}  \n"
+                        f"✅ {entry.get('Solusi','-')}"
                     )
                 with c2:
-                    if st.button("âœï¸", key=f"edit_{i}", help="Edit entri ini"):
+                    if st.button("✏️", key=f"edit_{i}", help="Edit entri ini"):
                         st.session_state.edit_index = i
                         st.rerun()
                 with c3:
-                    if st.button("ðŸ—‘ï¸", key=f"del_{i}", help="Hapus entri ini"):
+                    if st.button("🗑️", key=f"del_{i}", help="Hapus entri ini"):
                         with st.spinner("Menghapus..."):
                             new_data = [e for j, e in enumerate(data) if j != i]
                             save_json(service, new_data, fid)
                             upload_pdf(service, generate_pdf(new_data, PDF_TITLE, HDR_TEXT), PDF_NAME)
-                            st.success("âœ… Dihapus!")
+                            st.success("✅ Dihapus!")
                             st.rerun()
 
-    # â”€â”€ Gabungkan Data Januariâ€“April â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Gabungkan Data Januari–April ──────────────────────────
     st.divider()
-    with st.expander("âš™ï¸ Tambah Data Awal Januariâ€“April"):
-        st.info("âœ… Data Januariâ€“April akan ditambahkan **di depan** data yang sudah ada. "
+    with st.expander("⚙️ Tambah Data Awal Januari–April"):
+        st.info("✅ Data Januari–April akan ditambahkan **di depan** data yang sudah ada. "
                 "Data lama seperti Mei **tidak akan hilang**.")
-        if st.button("ðŸ“¥ Gabungkan Data Januariâ€“April ke Drive"):
+        if st.button("📥 Gabungkan Data Januari–April ke Drive"):
             data_awal = [
                 {"Bulan":"Januari",  "Unit":"Kasir",
                  "Kendala":"PC lambat dan sering hang",
@@ -433,15 +433,4 @@ with tab2:
                  "Solusi":"Setting awal OS, jaringan, dan aplikasi standar RS"},
                 {"Bulan":"April",    "Unit":"Ruang SIMRS",
                  "Kendala":"Pengolahan data laporan jaspel (PDF ke CSV)",
-                 "Solusi":"Konversi dan validasi data digital menggunakan aplikasi utilitas buatan sendiri"},
-            ]
-            with st.spinner("Menggabungkan data..."):
-                try:
-                    existing, fid_ex = load_json(service, JSON_NAME)
-                    merged = data_awal + existing
-                    save_json(service, merged, fid_ex)
-                    upload_pdf(service, generate_pdf(merged, PDF_TITLE, HDR_TEXT), PDF_NAME)
-                    st.success(f"âœ… Berhasil! Total sekarang {len(merged)} entri. Data lama tetap aman.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"âŒ Gagal: {e}")
+                
