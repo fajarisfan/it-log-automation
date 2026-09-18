@@ -30,12 +30,19 @@ TRIWULAN_CONFIG = {
         "json_name": "laporan_db_tw2.json",
         "bulan":     ["April", "Mei", "Juni"],
     },
-    "Triwulan Final / Tahunan": {
-        "pdf_name":  "Laporan_IT_Triwulan_Final_Isfan.pdf",
-        "pdf_title": "Laporan IT Tahunan (Final)",
-        "header":    "LAPORAN IT TAHUNAN (FINAL)",
-        "json_name": "laporan_db_final.json",
-        "bulan":     ["Juli","Agustus","September","Oktober","November","Desember"],
+    "Triwulan 3 (Jul–Sep)": {
+        "pdf_name":  "Laporan_IT_Triwulan_3_Isfan.pdf",
+        "pdf_title": "Laporan IT Triwulan III",
+        "header":    "LAPORAN IT TRIWULAN III",
+        "json_name": "laporan_db_tw3.json",
+        "bulan":     ["Juli", "Agustus", "September"],
+    },
+    "Triwulan 4 (Okt–Des)": {
+        "pdf_name":  "Laporan_IT_Triwulan_4_Isfan.pdf",
+        "pdf_title": "Laporan IT Triwulan IV",
+        "header":    "LAPORAN IT TRIWULAN IV",
+        "json_name": "laporan_db_tw4.json",
+        "bulan":     ["Oktober", "November", "Desember"],
     },
 }
 
@@ -259,7 +266,7 @@ st.divider()
 selected_triwulan = st.selectbox(
     "📅 Pilih Periode Triwulan",
     options=list(TRIWULAN_CONFIG.keys()),
-    help="Pilih periode yang sesuai dengan eKinerja — Triwulan 1, Triwulan 2, atau Final/Tahunan"
+    help="Pilih periode yang sesuai dengan eKinerja — Triwulan 1, 2, 3, atau 4"
 )
 cfg       = TRIWULAN_CONFIG[selected_triwulan]
 PDF_NAME  = cfg["pdf_name"]
