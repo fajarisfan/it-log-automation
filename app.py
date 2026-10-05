@@ -2,6 +2,8 @@ import streamlit as st
 import json
 import io
 import base64
+from datetime import datetime
+from collections import Counter
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
@@ -25,6 +27,7 @@ TRIWULAN_CONFIG = {
         "header":    "LAPORAN IT TRIWULAN I",
         "json_name": "laporan_db.json",
         "bulan":     ["Januari", "Februari", "Maret"],
+        "romawi":    "I",
     },
     "Triwulan 2 (Apr–Jun)": {
         "pdf_name":  "Laporan_IT_Triwulan_2_Isfan.pdf",
@@ -32,6 +35,7 @@ TRIWULAN_CONFIG = {
         "header":    "LAPORAN IT TRIWULAN II",
         "json_name": "laporan_db_tw2.json",
         "bulan":     ["April", "Mei", "Juni"],
+        "romawi":    "II",
     },
     "Triwulan 3 (Jul–Sep)": {
         "pdf_name":  "Laporan_IT_Triwulan_3_Isfan.pdf",
@@ -39,6 +43,7 @@ TRIWULAN_CONFIG = {
         "header":    "LAPORAN IT TRIWULAN III",
         "json_name": "laporan_db_tw3.json",
         "bulan":     ["Juli", "Agustus", "September"],
+        "romawi":    "III",
     },
     "Triwulan 4 (Okt–Des)": {
         "pdf_name":  "Laporan_IT_Triwulan_4_Isfan.pdf",
@@ -46,6 +51,7 @@ TRIWULAN_CONFIG = {
         "header":    "LAPORAN IT TRIWULAN IV",
         "json_name": "laporan_db_tw4.json",
         "bulan":     ["Oktober", "November", "Desember"],
+        "romawi":    "IV",
     },
 }
 
@@ -162,8 +168,9 @@ def make_page_decorator(header_text):
     return add_page_decorations
 
 # ── PDF Generator ─────────────────────────────────────────────
-def generate_pdf(all_data, pdf_title="Laporan IT Triwulan I", header_text="LAPORAN IT TRIWULAN I"):
+def generate_pdf(all_data, pdf_title="Laporan IT Triwulan I", header_text="LAPORAN IT TRIWULAN I", romawi="I"):
     buf = io.BytesIO()
+    nomor_dokumen = f"No: LAP-IT/TW-{romawi}/{datetime.now().year}/RSUD-CLG"
     doc = BaseDocTemplate(buf, pagesize=A4,
                           rightMargin=1.5*cm, leftMargin=1.5*cm,
                           topMargin=3.0*cm, bottomMargin=1.8*cm)
@@ -185,10 +192,17 @@ def generate_pdf(all_data, pdf_title="Laporan IT Triwulan I", header_text="LAPOR
                              textColor=C_GREEN, alignment=TA_CENTER, leading=12)
     s_info  = ParagraphStyle("info",  fontName="Helvetica", fontSize=8,
                              textColor=C_TEXT, leading=13)
+    s_nomor = ParagraphStyle("nomor", fontName="Helvetica-Oblique", fontSize=8,
+                             textColor=C_TEXT, alignment=TA_CENTER, spaceAfter=4)
+    s_ringkasan_title = ParagraphStyle("ringkasan_title", fontName="Helvetica-Bold",
+                             fontSize=10, textColor=C_HEADER, spaceBefore=10, spaceAfter=4)
+    s_ringkasan = ParagraphStyle("ringkasan", fontName="Helvetica", fontSize=9,
+                             textColor=C_TEXT, leading=14, alignment=TA_LEFT)
 
     elements = [Spacer(1, 0.2*cm),
                 Paragraph(pdf_title, s_judul),
                 Paragraph("Teknisi: Isfan Fajar Anugrah &nbsp;|&nbsp; NIP: 199709302025211069 &nbsp;|&nbsp; Divisi Teknologi Informasi", s_sub),
+                Paragraph(nomor_dokumen, s_nomor),
                 HRFlowable(width="100%", thickness=2, color=C_ACCENT, spaceAfter=10)]
 
     header = [Paragraph(t, s_hdr) for t in
@@ -243,6 +257,22 @@ def generate_pdf(all_data, pdf_title="Laporan IT Triwulan I", header_text="LAPOR
                  HRFlowable(width="100%", thickness=1, color=C_SUBHEAD, spaceAfter=6),
                  Paragraph(f"Total entri: <b>{len(all_data)}</b> &nbsp;|&nbsp; "
                             f"Bulan tercatat: <b>{', '.join(bulan_list)}</b>", s_info)]
+
+    if all_data:
+        unit_counts = Counter(e.get("Unit", "-") for e in all_data)
+        unit_teratas, jumlah_teratas = unit_counts.most_common(1)[0]
+        unit_ringkasan = "; ".join(f"{u} ({c})" for u, c in unit_counts.most_common())
+        ringkasan_text = (
+            f"Selama periode ini tercatat <b>{len(all_data)} kendala/pekerjaan</b> yang ditangani. "
+            f"Unit/lokasi dengan jumlah penanganan terbanyak adalah <b>{unit_teratas}</b> "
+            f"sebanyak {jumlah_teratas} kali. Rincian per unit: {unit_ringkasan}. "
+            f"Seluruh kendala pada periode ini telah ditindaklanjuti hingga selesai."
+        )
+        elements += [
+            Paragraph("Ringkasan Periode", s_ringkasan_title),
+            Paragraph(ringkasan_text, s_ringkasan),
+        ]
+
     doc.build(elements)
     buf.seek(0)
     return buf
@@ -285,6 +315,7 @@ PDF_NAME  = cfg["pdf_name"]
 PDF_TITLE = cfg["pdf_title"]
 HDR_TEXT  = cfg["header"]
 JSON_NAME = cfg["json_name"]
+ROMAWI    = cfg["romawi"]
 BULAN_TRIWULAN = cfg["bulan"]
 
 st.info(f"📄 PDF target: `{PDF_NAME}`")
@@ -317,7 +348,7 @@ with tab1:
             data, _ = load_json(service, JSON_NAME)
             preview  = data + [{"Bulan":bulan,"Unit":unit,"Kendala":kendala,"Solusi":solusi}]
             st.info(f"👁️ Preview {len(preview)} entri (belum tersimpan ke Drive)")
-            show_pdf_preview(generate_pdf(preview, PDF_TITLE, HDR_TEXT))
+            show_pdf_preview(generate_pdf(preview, PDF_TITLE, HDR_TEXT, ROMAWI))
 
     if submit_btn:
         if not unit or not kendala or not solusi:
@@ -329,7 +360,7 @@ with tab1:
                     data.append({"Bulan":bulan,"Unit":unit,
                                  "Kendala":kendala,"Solusi":solusi})
                     save_json(service, data, fid)
-                    upload_pdf(service, generate_pdf(data, PDF_TITLE, HDR_TEXT), PDF_NAME)
+                    upload_pdf(service, generate_pdf(data, PDF_TITLE, HDR_TEXT, ROMAWI), PDF_NAME)
 
                     st.success(f"✅ Berhasil! **{PDF_NAME}** diperbarui di Drive.")
                     st.balloons()
@@ -350,11 +381,11 @@ with tab2:
         col_prev, col_upd = st.columns(2)
         with col_prev:
             if st.button("🔍 Preview PDF Tersimpan"):
-                show_pdf_preview(generate_pdf(data, PDF_TITLE, HDR_TEXT))
+                show_pdf_preview(generate_pdf(data, PDF_TITLE, HDR_TEXT, ROMAWI))
         with col_upd:
             if st.button("🔄 Update Ulang PDF ke Drive"):
                 with st.spinner("Membuat ulang PDF dengan format terbaru..."):
-                    upload_pdf(service, generate_pdf(data, PDF_TITLE, HDR_TEXT), PDF_NAME)
+                    upload_pdf(service, generate_pdf(data, PDF_TITLE, HDR_TEXT, ROMAWI), PDF_NAME)
                 st.success("PDF berhasil diperbarui ke Drive dengan format terbaru ✅")
 
         st.divider()
@@ -399,7 +430,7 @@ with tab2:
                                         "Solusi":  e_solusi,
                                     }
                                     save_json(service, data, fid)
-                                    upload_pdf(service, generate_pdf(data, PDF_TITLE, HDR_TEXT), PDF_NAME)
+                                    upload_pdf(service, generate_pdf(data, PDF_TITLE, HDR_TEXT, ROMAWI), PDF_NAME)
                                     st.success("✅ Entri berhasil diperbarui!")
                                     st.session_state.edit_index = None
                                     st.rerun()
@@ -428,7 +459,7 @@ with tab2:
                         with st.spinner("Menghapus..."):
                             new_data = [e for j, e in enumerate(data) if j != i]
                             save_json(service, new_data, fid)
-                            upload_pdf(service, generate_pdf(new_data, PDF_TITLE, HDR_TEXT), PDF_NAME)
+                            upload_pdf(service, generate_pdf(new_data, PDF_TITLE, HDR_TEXT, ROMAWI), PDF_NAME)
                             st.success("✅ Dihapus!")
                             st.rerun()
 
@@ -466,7 +497,7 @@ with tab2:
                     existing, fid_ex = load_json(service, JSON_NAME)
                     merged = data_awal + existing
                     save_json(service, merged, fid_ex)
-                    upload_pdf(service, generate_pdf(merged, PDF_TITLE, HDR_TEXT), PDF_NAME)
+                    upload_pdf(service, generate_pdf(merged, PDF_TITLE, HDR_TEXT, ROMAWI), PDF_NAME)
                     st.success(f"✅ Berhasil! Total sekarang {len(merged)} entri. Data lama tetap aman.")
                     st.rerun()
                 except Exception as e:
