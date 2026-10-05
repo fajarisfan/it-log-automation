@@ -347,8 +347,15 @@ with tab2:
         st.info("Belum ada data tersimpan.")
     else:
         st.write(f"Total entri: **{len(data)}**")
-        if st.button("🔍 Preview PDF Tersimpan"):
-            show_pdf_preview(generate_pdf(data, PDF_TITLE, HDR_TEXT))
+        col_prev, col_upd = st.columns(2)
+        with col_prev:
+            if st.button("🔍 Preview PDF Tersimpan"):
+                show_pdf_preview(generate_pdf(data, PDF_TITLE, HDR_TEXT))
+        with col_upd:
+            if st.button("🔄 Update Ulang PDF ke Drive"):
+                with st.spinner("Membuat ulang PDF dengan format terbaru..."):
+                    upload_pdf(service, generate_pdf(data, PDF_TITLE, HDR_TEXT), PDF_NAME)
+                st.success("PDF berhasil diperbarui ke Drive dengan format terbaru ✅")
 
         st.divider()
 
