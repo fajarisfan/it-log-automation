@@ -2,7 +2,9 @@ import streamlit as st
 import json
 import io
 import base64
-from datetime import datetime
+import re
+from xml.sax.saxutils import escape as xml_escape
+from datetime import datetime, timedelta, timezone
 from collections import Counter
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
@@ -11,7 +13,8 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.units import cm
 from reportlab.platypus import (Table, TableStyle, Paragraph, Spacer,
-                                HRFlowable, BaseDocTemplate, PageTemplate, Frame)
+                                HRFlowable, BaseDocTemplate, PageTemplate, Frame, KeepTogether,
+                                Image as RLImage)
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib.utils import ImageReader
@@ -121,6 +124,32 @@ def upload_pdf(service, pdf_buffer, pdf_name=None):
     media = MediaIoBaseUpload(pdf_buffer, mimetype="application/pdf", resumable=False)
     service.files().update(fileId=fid, media_body=media).execute()
 
+TTD_JSON = "ttd_config.json"
+
+def load_ttd(service):
+    """Baca ttd_config.json (ttd IT + Kanit permanen). Return (dict, file_id|None)."""
+    fid = get_file_id(service, TTD_JSON)
+    if not fid:
+        return {}, None
+    req = service.files().get_media(fileId=fid)
+    fh  = io.BytesIO()
+    dl  = MediaIoBaseDownload(fh, req)
+    done = False
+    while not done:
+        _, done = dl.next_chunk()
+    raw = fh.getvalue().decode("utf-8").strip()
+    return (json.loads(raw) if raw else {}), fid
+
+def img_to_b64(uploaded, max_w=700):
+    """Perkecil gambar ttd & simpan sebagai PNG base64 (biar JSON ringan)."""
+    from PIL import Image as PILImage
+    im = PILImage.open(io.BytesIO(uploaded.getvalue())).convert("RGBA")
+    if im.width > max_w:
+        im = im.resize((max_w, int(im.height * max_w / im.width)))
+    out = io.BytesIO()
+    im.save(out, "PNG", optimize=True)
+    return base64.b64encode(out.getvalue()).decode("utf-8")
+
 def check_missing_files(service):
     """Return list file (PDF/JSON) yang belum ada di Drive."""
     missing = []
@@ -132,6 +161,84 @@ def check_missing_files(service):
     return missing
 
 
+
+
+# ── Tanggal otomatis (WIB) ───────────────────────────────────
+WIB = timezone(timedelta(hours=7))
+BULAN_ID = ["Januari","Februari","Maret","April","Mei","Juni","Juli",
+            "Agustus","September","Oktober","November","Desember"]
+
+def tanggal_hari_ini():
+    n = datetime.now(WIB)
+    return f"{n.day} {BULAN_ID[n.month-1]} {n.year}"
+
+# ── Parser teks laporan dari WhatsApp ────────────────────────
+_WA_LABELS = [
+    ("bulan",   r"bulan"),
+    ("tanggal", r"tanggal|tgl"),
+    ("unit",    r"lokasi\s*/\s*unit|lokasi|unit|ruangan|ruang|tempat"),
+    ("kendala", r"jenis\s+kendala(?:\s*/\s*pekerjaan)?|kendala|masalah|keluhan|pekerjaan|problem|laporan"),
+    ("solusi",  r"tindakan\s*/\s*solusi|solusi|tindakan|penanganan|perbaikan|action"),
+]
+_WA_LABEL_RE = [(k, re.compile(r"^\s*(?:[-•\d.)]+\s*)?(?:%s)\s*[:=]\s*(.*)$" % pat, re.I))
+                for k, pat in _WA_LABELS]
+_WA_PREFIX_RE = re.compile(
+    r"^\[?\d{1,2}[/.]\d{1,2}[/.]\d{2,4},?\s+\d{1,2}[.:]\d{2}(?:[.:]\d{2})?\]?\s*-?\s*[^:]{1,40}:\s*")
+
+def _bulan_from_text(txt):
+    if not txt:
+        return None
+    for b in BULAN_ID:
+        if re.search(r"\b%s\b" % b, txt, re.I):
+            return b
+    m = re.search(r"\b(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{2,4})\b", txt)
+    if m and 1 <= int(m.group(2)) <= 12:
+        return BULAN_ID[int(m.group(2)) - 1]
+    return None
+
+def parse_wa_report(text, default_bulan):
+    """Ubah teks laporan WA jadi list entri {Bulan, Unit, Kendala, Solusi}."""
+    text = text.replace("\r", "")
+    text = re.sub(r"[*~`]", "", text)
+    text = re.sub(r"(?<!\w)_(.+?)_(?!\w)", r"\1", text)
+    entries, cur, field = [], {}, None
+
+    def push():
+        nonlocal cur
+        if cur:
+            bulan = (_bulan_from_text(cur.get("bulan")) or _bulan_from_text(cur.get("tanggal"))
+                     or default_bulan)
+            entries.append({"Bulan": bulan, "Unit": cur.get("unit", "").strip(),
+                            "Kendala": cur.get("kendala", "").strip(),
+                            "Solusi": cur.get("solusi", "").strip()})
+        cur = {}
+
+    for raw in text.split("\n"):
+        line = _WA_PREFIX_RE.sub("", raw).rstrip()
+        if not line.strip():
+            field = None
+            continue
+        hit = None
+        for key, rx in _WA_LABEL_RE:
+            m = rx.match(line)
+            if m:
+                hit = (key, m.group(1).strip())
+                break
+        if hit:
+            key, val = hit
+            if key in cur:          # label yang sama muncul lagi = laporan baru
+                push()
+            cur[key] = val
+            field = key
+        elif field:
+            cur[field] = (cur.get(field, "") + " " + line.strip()).strip()
+
+    push()
+    entries = [e for e in entries if e["Unit"] or e["Kendala"] or e["Solusi"]]
+    if not entries and text.strip():   # tidak ada label sama sekali
+        entries = [{"Bulan": default_bulan, "Unit": "",
+                    "Kendala": " ".join(text.split()), "Solusi": ""}]
+    return entries
 
 # ── Dekorasi halaman PDF ──────────────────────────────────────
 def make_page_decorator(header_text):
@@ -166,6 +273,84 @@ def make_page_decorator(header_text):
         canvas.drawRightString(W - 1.5*cm, 0.3*cm, f"Halaman {doc.page}")
         canvas.restoreState()
     return add_page_decorations
+
+
+# ── Blok tanda tangan (mengikuti form Pemeliharaan Rutin/Berkala Komputer) ──
+def build_signature_block():
+    ss = st.session_state
+    def dots(val, n=38):
+        return val.strip() if val and val.strip() else "." * n
+    pengawas_nama = dots(ss.get("ttd_pengawas_nama", ""))
+    pengawas_nip  = ss.get("ttd_pengawas_nip", "").strip()
+    user_nama     = dots(ss.get("ttd_user_nama", ""))
+    user_unit     = ss.get("ttd_user_unit", "").strip()
+    tanggal       = dots(ss.get("ttd_tanggal", ""), 26)
+
+    cfg_ttd = ss.get("ttd_cfg", {}) or {}
+    def b64_bytes(key):
+        v = cfg_ttd.get(key)
+        return base64.b64decode(v) if v else None
+    def upload_bytes(*keys):
+        for k in keys:
+            f = ss.get(k)
+            if f:
+                return f.getvalue()
+        return None
+
+    def sig_img(raw, max_w=4.2*cm, max_h=1.9*cm):
+        if not raw:
+            return ""
+        try:
+            iw, ih = ImageReader(io.BytesIO(raw)).getSize()
+            ratio = min(max_w/iw, max_h/ih)
+            return RLImage(io.BytesIO(raw), width=iw*ratio, height=ih*ratio, mask="auto")
+        except Exception:
+            return ""
+
+    img_pengawas = b64_bytes("kanit_img_b64")
+    img_teknisi  = b64_bytes("it_img_b64")
+    img_user     = upload_bytes("ttd_user_img", "ttd_user_cam")
+
+    s_role = ParagraphStyle("role", fontName="Helvetica-Bold", fontSize=9,
+                            textColor=C_TEXT, alignment=TA_CENTER, leading=12)
+    s_sub  = ParagraphStyle("rolesub", fontName="Helvetica", fontSize=9,
+                            textColor=C_TEXT, alignment=TA_CENTER, leading=12)
+    s_name = ParagraphStyle("signame", fontName="Helvetica", fontSize=9,
+                            textColor=C_TEXT, alignment=TA_CENTER, leading=12)
+
+    def nama_cell(nama, extra=""):
+        t = f"( {nama} )"
+        if extra:
+            t += f"<br/><font size=7.5>{extra}</font>"
+        return Paragraph(t, s_name)
+
+    tbl_atas = Table(
+        [[Paragraph("PENGAWAS PEKERJAAN", s_role), Paragraph("PETUGAS SERVICE/", s_role)],
+         [Paragraph("Petugas Unit SIMRS", s_sub),   Paragraph("Teknisi", s_sub)],
+         [sig_img(img_pengawas), sig_img(img_teknisi)],
+         [nama_cell(pengawas_nama, f"NIP: {pengawas_nip}" if pengawas_nip else ""),
+          nama_cell("Isfan Fajar Anugrah", "NIP: 199709302025211069")]],
+        colWidths=[9*cm, 9*cm],
+        rowHeights=[0.5*cm, 0.5*cm, 2.0*cm, None])
+    tbl_atas.setStyle(TableStyle([("VALIGN", (0,0), (-1,-1), "TOP"),
+                                  ("TOPPADDING", (0,0), (-1,-1), 0),
+                                  ("BOTTOMPADDING", (0,0), (-1,-1), 0)]))
+
+    tbl_bawah = Table(
+        [[Paragraph(f"Cilegon, {tanggal}", s_sub)],
+         [Paragraph("Petugas Yang Menerima", s_role)],
+         [Paragraph("Hasil Service / User", s_sub)],
+         [sig_img(img_user)],
+         [nama_cell(user_nama, user_unit)]],
+        colWidths=[18*cm],
+        rowHeights=[0.6*cm, 0.5*cm, 0.5*cm, 2.0*cm, None])
+    tbl_bawah.setStyle(TableStyle([("VALIGN", (0,0), (-1,-1), "TOP"),
+                                   ("TOPPADDING", (0,0), (-1,-1), 0),
+                                   ("BOTTOMPADDING", (0,0), (-1,-1), 0)]))
+
+    return KeepTogether([Spacer(1, 0.8*cm),
+                         HRFlowable(width="100%", thickness=1, color=C_SUBHEAD, spaceAfter=8),
+                         tbl_atas, Spacer(1, 0.4*cm), tbl_bawah])
 
 # ── PDF Generator ─────────────────────────────────────────────
 def generate_pdf(all_data, pdf_title="Laporan IT Triwulan I", header_text="LAPORAN IT TRIWULAN I", romawi="I"):
@@ -217,10 +402,10 @@ def generate_pdf(all_data, pdf_title="Laporan IT Triwulan I", header_text="LAPOR
             last_bulan = bulan_ini
         rows.append([
             Paragraph(str(i+1), s_ctr),
-            Paragraph(tampil, s_cell),
-            Paragraph(e.get("Unit",    "-"), s_cell),
-            Paragraph(e.get("Kendala", "-"), s_cell),
-            Paragraph(e.get("Solusi",  "-"), s_cell),
+            Paragraph(xml_escape(tampil), s_cell),
+            Paragraph(xml_escape(e.get("Unit", "-")), s_cell),
+            Paragraph(xml_escape(e.get("Kendala", "-")), s_cell),
+            Paragraph(xml_escape(e.get("Solusi", "-")), s_cell),
             Paragraph("Selesai", s_done),
         ])
 
@@ -261,10 +446,10 @@ def generate_pdf(all_data, pdf_title="Laporan IT Triwulan I", header_text="LAPOR
     if all_data:
         unit_counts = Counter(e.get("Unit", "-") for e in all_data)
         unit_teratas, jumlah_teratas = unit_counts.most_common(1)[0]
-        unit_ringkasan = "; ".join(f"{u} ({c})" for u, c in unit_counts.most_common())
+        unit_ringkasan = "; ".join(f"{xml_escape(u)} ({c})" for u, c in unit_counts.most_common())
         ringkasan_text = (
             f"Selama periode ini tercatat <b>{len(all_data)} kendala/pekerjaan</b> yang ditangani. "
-            f"Unit/lokasi dengan jumlah penanganan terbanyak adalah <b>{unit_teratas}</b> "
+            f"Unit/lokasi dengan jumlah penanganan terbanyak adalah <b>{xml_escape(unit_teratas)}</b> "
             f"sebanyak {jumlah_teratas} kali. Rincian per unit: {unit_ringkasan}. "
             f"Seluruh kendala pada periode ini telah ditindaklanjuti hingga selesai."
         )
@@ -273,6 +458,7 @@ def generate_pdf(all_data, pdf_title="Laporan IT Triwulan I", header_text="LAPOR
             Paragraph(ringkasan_text, s_ringkasan),
         ]
 
+    elements.append(build_signature_block())
     doc.build(elements)
     buf.seek(0)
     return buf
@@ -319,6 +505,70 @@ ROMAWI    = cfg["romawi"]
 BULAN_TRIWULAN = cfg["bulan"]
 
 st.info(f"📄 PDF target: `{PDF_NAME}`")
+
+# Muat ttd permanen (IT & Kanit) sekali per sesi
+if "ttd_cfg" not in st.session_state:
+    try:
+        cfg_loaded, fid_loaded = load_ttd(service)
+    except Exception:
+        cfg_loaded, fid_loaded = {}, None
+    st.session_state.ttd_cfg = cfg_loaded
+    st.session_state.ttd_fid = fid_loaded
+    st.session_state.setdefault("ttd_pengawas_nama", cfg_loaded.get("kanit_nama", ""))
+    st.session_state.setdefault("ttd_pengawas_nip",  cfg_loaded.get("kanit_nip", ""))
+
+st.session_state.setdefault("ttd_tanggal", tanggal_hari_ini())
+
+with st.expander("✍️ Tanda Tangan (muncul di akhir PDF)"):
+    cfg_t = st.session_state.ttd_cfg
+    if not st.session_state.ttd_fid:
+        st.warning(f"File `{TTD_JSON}` belum ada di folder Drive. Buat file teks kosong dengan nama itu "
+                   f"(isi: `{{}}`) di folder yang sama, lalu refresh. Tanpa itu ttd permanen belum bisa disimpan.")
+
+    st.markdown("**🔒 Permanen — IT & Kanit (upload sekali, tersimpan di Drive)**")
+    p1, p2 = st.columns(2)
+    with p1:
+        st.caption("TTD IT (Isfan)")
+        if cfg_t.get("it_img_b64"):
+            st.image(base64.b64decode(cfg_t["it_img_b64"]), width=140)
+        st.file_uploader("Ganti/upload TTD IT", type=["png","jpg","jpeg"], key="ttd_it_up")
+    with p2:
+        st.caption("TTD Kanit / Pengawas")
+        if cfg_t.get("kanit_img_b64"):
+            st.image(base64.b64decode(cfg_t["kanit_img_b64"]), width=140)
+        st.file_uploader("Ganti/upload TTD Kanit", type=["png","jpg","jpeg"], key="ttd_kanit_up")
+        st.text_input("Nama Kanit / Pengawas (Petugas Unit SIMRS)", key="ttd_pengawas_nama")
+        st.text_input("NIP Kanit (opsional)", key="ttd_pengawas_nip")
+
+    if st.button("💾 Simpan Permanen ke Drive"):
+        if not st.session_state.ttd_fid:
+            st.error(f"❌ `{TTD_JSON}` belum ada di Drive (lihat peringatan di atas).")
+        else:
+            try:
+                new_cfg = dict(cfg_t)
+                if st.session_state.get("ttd_it_up"):
+                    new_cfg["it_img_b64"] = img_to_b64(st.session_state.ttd_it_up)
+                if st.session_state.get("ttd_kanit_up"):
+                    new_cfg["kanit_img_b64"] = img_to_b64(st.session_state.ttd_kanit_up)
+                new_cfg["kanit_nama"] = st.session_state.get("ttd_pengawas_nama", "")
+                new_cfg["kanit_nip"]  = st.session_state.get("ttd_pengawas_nip", "")
+                save_json(service, new_cfg, st.session_state.ttd_fid)
+                st.session_state.ttd_cfg = new_cfg
+                st.success("✅ TTD IT & Kanit tersimpan permanen.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Gagal menyimpan: {e}")
+
+    st.divider()
+    st.markdown("**✏️ Per laporan — Penerima / User**")
+    st.text_input("Nama Penerima Hasil Service / User", key="ttd_user_nama")
+    st.text_input("Unit Penerima (opsional)", key="ttd_user_unit")
+    st.text_input("Tanggal (otomatis hari ini, bisa diubah)", key="ttd_tanggal")
+    st.file_uploader("TTD User (upload gambar)", type=["png","jpg","jpeg"], key="ttd_user_img")
+    if st.toggle("📷 Atau foto ttd user pakai kamera"):
+        st.camera_input("Foto ttd user (di kertas putih)", key="ttd_user_cam")
+    st.caption("Kolom ttd yang nggak diisi tetap kosong di PDF, jadi masih bisa ditulis tangan.")
+
 st.divider()
 
 # ── Session state untuk edit ──────────────────────────────────
@@ -330,12 +580,58 @@ tab1, tab2 = st.tabs(["📝 Input Laporan", "🗂️ Lihat, Edit & Hapus Data"])
 # ══════════════════════════════════════════════════════════════
 # TAB 1 — CREATE
 # ══════════════════════════════════════════════════════════════
+# Default bulan = bulan sekarang kalau masuk triwulan yang dipilih
+_bln_now = BULAN_ID[datetime.now(WIB).month - 1]
+if st.session_state.get("in_bulan") not in BULAN_TRIWULAN:
+    st.session_state.in_bulan = _bln_now if _bln_now in BULAN_TRIWULAN else BULAN_TRIWULAN[0]
+
+def _fill_form(entry):
+    if entry["Bulan"] in BULAN_TRIWULAN:
+        st.session_state.in_bulan = entry["Bulan"]
+    st.session_state.in_unit    = entry["Unit"]
+    st.session_state.in_kendala = entry["Kendala"]
+    st.session_state.in_solusi  = entry["Solusi"]
+
 with tab1:
+    with st.expander("📋 Paste laporan dari WhatsApp"):
+        st.caption("Format yang dikenali: baris berlabel seperti `Unit: ...`, `Kendala: ...`, `Solusi: ...` "
+                   "(atau Lokasi / Masalah / Tindakan). Boleh banyak laporan sekaligus.")
+        wa_text = st.text_area("Tempel teks WA di sini", height=180, key="wa_text")
+        if wa_text.strip():
+            parsed = parse_wa_report(wa_text, st.session_state.in_bulan)
+            luar = [e for e in parsed if e["Bulan"] not in BULAN_TRIWULAN]
+            if luar:
+                for e in luar:
+                    e["Bulan"] = st.session_state.in_bulan
+                st.warning(f"⚠️ {len(luar)} entri menyebut bulan di luar {selected_triwulan}. "
+                           f"Bulannya diganti ke **{st.session_state.in_bulan}**. "
+                           f"Kalau salah, pilih triwulan yang benar di atas.")
+            st.write(f"Terbaca **{len(parsed)}** entri:")
+            st.dataframe(parsed, use_container_width=True)
+            lengkap = all(e["Unit"] and e["Kendala"] and e["Solusi"] for e in parsed)
+            if not lengkap:
+                st.warning("⚠️ Ada entri yang belum lengkap (Unit/Kendala/Solusi kosong). "
+                           "Pakai **Isi ke form** lalu lengkapi manual.")
+            w1, w2 = st.columns(2)
+            with w1:
+                st.button("📝 Isi ke form (entri pertama)", on_click=_fill_form, args=(parsed[0],))
+            with w2:
+                if st.button(f"✅ Simpan semua ({len(parsed)}) ke laporan", disabled=not lengkap):
+                    with st.spinner("Menyimpan ke Drive..."):
+                        try:
+                            data, fid = load_json(service, JSON_NAME)
+                            data.extend(parsed)
+                            save_json(service, data, fid)
+                            upload_pdf(service, generate_pdf(data, PDF_TITLE, HDR_TEXT, ROMAWI), PDF_NAME)
+                            st.success(f"✅ {len(parsed)} entri ditambahkan. **{PDF_NAME}** diperbarui di Drive.")
+                        except Exception as e:
+                            st.error(f"❌ Terjadi kesalahan: {e}")
+
     with st.form("form_laporan"):
-        bulan   = st.selectbox("Bulan", BULAN_TRIWULAN)
-        unit    = st.text_input("Lokasi / Unit")
-        kendala = st.text_area("Jenis Kendala / Pekerjaan")
-        solusi  = st.text_area("Tindakan / Solusi")
+        bulan   = st.selectbox("Bulan", BULAN_TRIWULAN, key="in_bulan")
+        unit    = st.text_input("Lokasi / Unit", key="in_unit")
+        kendala = st.text_area("Jenis Kendala / Pekerjaan", key="in_kendala")
+        solusi  = st.text_area("Tindakan / Solusi", key="in_solusi")
         ss_file = None
         col1, col2 = st.columns(2)
         with col1: preview_btn = st.form_submit_button("🔍 Preview PDF")
@@ -363,7 +659,6 @@ with tab1:
                     upload_pdf(service, generate_pdf(data, PDF_TITLE, HDR_TEXT, ROMAWI), PDF_NAME)
 
                     st.success(f"✅ Berhasil! **{PDF_NAME}** diperbarui di Drive.")
-                    st.balloons()
                 except Exception as e:
                     st.error(f"❌ Terjadi kesalahan: {e}")
 
