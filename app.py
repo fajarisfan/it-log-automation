@@ -4,7 +4,7 @@ import io
 import base64
 import re
 from xml.sax.saxutils import escape as xml_escape
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 from collections import Counter
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
@@ -141,12 +141,41 @@ def load_ttd(service):
     raw = fh.getvalue().decode("utf-8").strip()
     return (json.loads(raw) if raw else {}), fid
 
-def img_to_b64(uploaded, max_w=700):
-    """Perkecil gambar ttd & simpan sebagai PNG base64 (biar JSON ringan)."""
-    from PIL import Image as PILImage
-    im = PILImage.open(io.BytesIO(uploaded.getvalue())).convert("RGBA")
+def clean_signature(im, max_w):
+    """Hapus latar kertas dari foto/scan ttd → hanya tinta (transparan), lalu crop rapat."""
+    from PIL import Image as PILImage, ImageFilter, ImageOps
+    im = ImageOps.exif_transpose(im).convert("RGBA")
     if im.width > max_w:
-        im = im.resize((max_w, int(im.height * max_w / im.width)))
+        im = im.resize((max_w, max(1, int(im.height * max_w / im.width))))
+    if im.getchannel("A").getextrema()[0] < 255:
+        return im                       # sudah transparan (PNG) → biarkan
+    try:
+        import numpy as np
+    except ImportError:
+        return im
+    rgb  = im.convert("RGB")
+    gray = rgb.convert("L")
+    # perkiraan terang kertas per area (tahan bayangan/pencahayaan tidak rata)
+    k   = max(3, (gray.width // 25) | 1)
+    bg  = gray.filter(ImageFilter.MaxFilter(k)).filter(ImageFilter.GaussianBlur(max(1, gray.width // 40)))
+    g   = np.asarray(gray, dtype=np.float32)
+    b   = np.maximum(np.asarray(bg, dtype=np.float32), 1.0)
+    ratio = g / b
+    alpha = np.clip((0.88 - ratio) / (0.88 - 0.60), 0.0, 1.0)     # terang kertas → transparan
+    arr   = np.asarray(rgb, dtype=np.float32) * (1.0 - 0.25 * alpha[..., None])  # tinta sedikit lebih tegas
+    arr[alpha < 0.02] = 0.0                                     # buang noise kertas di area transparan
+    out = PILImage.fromarray(np.dstack([arr, alpha * 255.0]).astype(np.uint8), "RGBA")
+    box = out.getchannel("A").point(lambda v: 255 if v > 24 else 0).getbbox()
+    if box:
+        pad = 4
+        out = out.crop((max(0, box[0]-pad), max(0, box[1]-pad),
+                        min(out.width, box[2]+pad), min(out.height, box[3]+pad)))
+    return out
+
+def img_to_b64(uploaded, max_w=700):
+    """TTD permanen: bersihkan latar, simpan sebagai PNG transparan (base64)."""
+    from PIL import Image as PILImage
+    im = clean_signature(PILImage.open(io.BytesIO(uploaded.getvalue())), max_w)
     out = io.BytesIO()
     im.save(out, "PNG", optimize=True)
     return base64.b64encode(out.getvalue()).decode("utf-8")
@@ -173,6 +202,82 @@ def tanggal_hari_ini():
     n = datetime.now(WIB)
     return f"{n.day} {BULAN_ID[n.month-1]} {n.year}"
 
+
+def tanggal_fmt(d):
+    return f"{d.day} {BULAN_ID[d.month-1]} {d.year}"
+
+def hari_ini_wib():
+    return datetime.now(WIB).date()
+
+def jam_sekarang():
+    return datetime.now(WIB).strftime("%H.%M")
+
+def parse_tanggal_id(txt):
+    """'10 November 2026' / '10/11/2026' / '2026-11-10' -> date, atau None."""
+    if not txt:
+        return None
+    t = str(txt).strip()
+    m = re.search(r"(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})", t)
+    if m:
+        for i, b in enumerate(BULAN_ID):
+            if b.lower() == m.group(2).lower():
+                try: return date(int(m.group(3)), i + 1, int(m.group(1)))
+                except ValueError: return None
+    m = re.search(r"(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{2,4})", t)
+    if m:
+        y = int(m.group(3)); y = y + 2000 if y < 100 else y
+        try: return date(y, int(m.group(2)), int(m.group(1)))
+        except ValueError: return None
+    m = re.search(r"(\d{4})-(\d{2})-(\d{2})", t)
+    if m:
+        try: return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError: return None
+    return None
+
+def _jam_ke_menit(j):
+    m = re.match(r"^\s*(\d{1,2})[.:](\d{2})\s*$", j or "")
+    return int(m.group(1)) * 60 + int(m.group(2)) if m else None
+
+def _menit_ke_jam(mnt):
+    mnt %= 1440
+    return f"{mnt // 60:02d}.{mnt % 60:02d}"
+
+# ── Tebak peralatan & jenis pekerjaan dari teks kendala/solusi ──
+_ALAT_RULES = [
+    (r"\bprinter\b|cetak", "Printer"),
+    (r"\bscanner\b", "Scanner"),
+    (r"\bups\b", "UPS"),
+    (r"\bcctv\b", "CCTV"),
+    (r"access point|\bap\b|wifi|wi-fi|hotspot", "Access Point / WiFi"),
+    (r"switch|\bhub\b|jaringan|network|\blan\b|internet|router|mikrotik|\butp\b", "Perangkat Jaringan"),
+    (r"\bserver\b", "Server"),
+    (r"laptop|notebook", "Laptop"),
+    (r"\bpc\b|komputer|computer|\bcpu\b|monitor|keyboard|mouse|\bram\b|hardisk|harddisk|\bssd\b|\bpsu\b", "PC / Komputer"),
+    (r"telepon|\bphone\b|pabx", "Telepon / PABX"),
+    (r"proyektor|projector|\btv\b", "Proyektor / TV"),
+]
+_JENIS_RULES = [
+    ("a", r"bersih|cleaning|\bclean\b|debu|kotor|blower"),
+    ("b", r"install|instal|pasang|kabel|crimp|konektor|\bscan|ganti|colok|konfigurasi|setting|setup|driver"),
+    ("c", r"database|\bdb\b|mysql|\bsql\b|rdbms|backup|restore|query|oracle|postgres"),
+    ("d", r"aplikasi|simrs|bridging|vclaim|modul|fitur|custom"),
+    ("e", r"windows|\bos\b|booting|\bboot\b|bsod|blue screen|format|restart|\bhang\b|lemot|lambat|aktivasi|lisensi"),
+]
+
+def tebak_detail(kendala, solusi):
+    k, sl = (kendala or "").lower(), (solusi or "").lower()
+    alat = ""
+    for teks in (k, sl):
+        for pat, nama in _ALAT_RULES:
+            if re.search(pat, teks):
+                alat = nama
+                break
+        if alat:
+            break
+    gabung = k + " " + sl
+    jenis = [huruf for huruf, pat in _JENIS_RULES if re.search(pat, gabung)]
+    return {"Peralatan": alat, "Jenis": jenis}
+
 # ── Parser teks laporan dari WhatsApp ────────────────────────
 _WA_LABELS = [
     ("bulan",   r"bulan"),
@@ -185,7 +290,7 @@ _WA_LABELS = [
 _WA_LABEL_RE = [(k, re.compile(r"^\s*(?:[-•\d.)]+\s*)?(?:%s)\s*[:=]\s*(.*)$" % pat, re.I))
                 for k, pat in _WA_LABELS]
 _WA_PREFIX_RE = re.compile(
-    r"^\[?\d{1,2}[/.]\d{1,2}[/.]\d{2,4},?\s+\d{1,2}[.:]\d{2}(?:[.:]\d{2})?\]?\s*-?\s*[^:]{1,40}:\s*")
+    r"^\[?(\d{1,2})[/.](\d{1,2})[/.](\d{2,4}),?\s+(\d{1,2})[.:](\d{2})(?:[.:]\d{2})?\]?\s*-?\s*[^:]{1,40}:\s*")
 
 def _bulan_from_text(txt):
     if not txt:
@@ -208,15 +313,30 @@ def parse_wa_report(text, default_bulan):
     def push():
         nonlocal cur
         if cur:
-            bulan = (_bulan_from_text(cur.get("bulan")) or _bulan_from_text(cur.get("tanggal"))
-                     or default_bulan)
+            # tanggal: label "Tanggal:" lengkap > tanggal pesan WA (prefix chat) > kosong
+            d_wa = parse_tanggal_id(cur.get("tanggal")) or cur.get("_tgl")
+            jam_wa = cur.get("_jam", "")
+            bulan = (BULAN_ID[d_wa.month - 1] if d_wa else None) \
+                    or _bulan_from_text(cur.get("bulan")) or _bulan_from_text(cur.get("tanggal")) \
+                    or default_bulan
             entries.append({"Bulan": bulan, "Unit": cur.get("unit", "").strip(),
                             "Kendala": cur.get("kendala", "").strip(),
                             "Solusi": cur.get("solusi", "").strip(),
-                            "Pelapor": cur.get("pelapor", "").strip()})
+                            "Pelapor": cur.get("pelapor", "").strip(),
+                            "Tanggal": tanggal_fmt(d_wa) if d_wa else "",
+                            "Mulai_Jam": jam_wa})
         cur = {}
 
+    last_ts = None
     for raw in text.split("\n"):
+        pm = _WA_PREFIX_RE.match(raw)
+        if pm:
+            y = int(pm.group(3)); y = y + 2000 if y < 100 else y
+            try:
+                last_ts = (date(y, int(pm.group(2)), int(pm.group(1))),
+                           f"{int(pm.group(4)):02d}.{pm.group(5)}")
+            except ValueError:
+                last_ts = None
         line = _WA_PREFIX_RE.sub("", raw).rstrip()
         if not line.strip():
             field = None
@@ -231,6 +351,8 @@ def parse_wa_report(text, default_bulan):
             key, val = hit
             if key in cur:          # label yang sama muncul lagi = laporan baru
                 push()
+            if last_ts and "_tgl" not in cur:
+                cur["_tgl"], cur["_jam"] = last_ts
             cur[key] = val
             field = key
         elif field:
@@ -240,7 +362,8 @@ def parse_wa_report(text, default_bulan):
     entries = [e for e in entries if e["Unit"] or e["Kendala"] or e["Solusi"]]
     if not entries and text.strip():   # tidak ada label sama sekali
         entries = [{"Bulan": default_bulan, "Unit": "",
-                    "Kendala": " ".join(text.split()), "Solusi": "", "Pelapor": ""}]
+                    "Kendala": " ".join(text.split()), "Solusi": "", "Pelapor": "",
+                    "Tanggal": "", "Mulai_Jam": ""}]
     return entries
 
 # ── Dekorasi halaman PDF ──────────────────────────────────────
@@ -289,17 +412,12 @@ def rl_sig(raw, max_w, max_h):
     except Exception:
         return None
 
-def ttd_user_to_b64(uploaded, max_w=320):
-    """Perkecil ttd user. Tanpa transparansi → JPEG (kecil), ada transparansi → PNG."""
+def ttd_user_to_b64(uploaded, max_w=500):
+    """TTD user per tiket: bersihkan latar kertas → PNG transparan (base64)."""
     from PIL import Image as PILImage
-    im = PILImage.open(io.BytesIO(uploaded.getvalue())).convert("RGBA")
-    if im.width > max_w:
-        im = im.resize((max_w, max(1, int(im.height * max_w / im.width))))
+    im = clean_signature(PILImage.open(io.BytesIO(uploaded.getvalue())), max_w)
     out = io.BytesIO()
-    if im.getchannel("A").getextrema()[0] == 255:
-        im.convert("RGB").save(out, "JPEG", quality=70, optimize=True)
-    else:
-        im.save(out, "PNG", optimize=True)
+    im.save(out, "PNG", optimize=True)
     return base64.b64encode(out.getvalue()).decode("utf-8")
 
 # ── FORM per tiket (meniru form kertas "Pemeliharaan Rutin/Berkala Komputer") ──
@@ -400,8 +518,9 @@ def build_form_flowables(e, nomor, total):
 
     out.append(Table([[P("IV", fb), P("JANGKA WAKTU PELAKSANAAN :", fb)]], colWidths=[1.0*cm, 16.6*cm],
                      style=[("TOPPADDING",(0,0),(-1,-1),3),("BOTTOMPADDING",(0,0),(-1,-1),0)]))
-    out.append(line_tbl([[P("Mulai Tgl :"), P(e.get("Mulai_Tgl","")), P("Jam :"), P(e.get("Mulai_Jam","")),
-                          P("Selesai Tgl :"), P(e.get("Selesai_Tgl","")), P("Jam :"), P(e.get("Selesai_Jam",""))]],
+    tgl_dasar = e.get("Tanggal") or ""
+    out.append(line_tbl([[P("Mulai Tgl :"), P(e.get("Mulai_Tgl") or tgl_dasar), P("Jam :"), P(e.get("Mulai_Jam","")),
+                          P("Selesai Tgl :"), P(e.get("Selesai_Tgl") or tgl_dasar), P("Jam :"), P(e.get("Selesai_Jam",""))]],
                         [1.8*cm, 3.2*cm, 1.0*cm, 2.0*cm, 2.2*cm, 3.2*cm, 1.0*cm, 2.2*cm], [1, 3, 5, 7]))
 
     out.append(Table([[P("V", fb), P("SOLUSI DAN TINDAKAN/PEKERJAAN (lingkari sesuai pekerjaan) :", fb)]],
@@ -433,14 +552,13 @@ def build_form_flowables(e, nomor, total):
         t = f"( {xml_escape(nama)} )"
         if extra: t += f"<br/><font size=7>{xml_escape(extra)}</font>"
         return Paragraph(t, fc)
-    pnip = ss.get("ttd_pengawas_nip", "").strip()
-    tanggal_ttd = e.get("Tanggal") or ss.get("ttd_tanggal", "")
+    tanggal_ttd = e.get("Tanggal") or ""      # jangan pakai tanggal hari ini kalau entri tak punya tanggal
     atas = Table(
         [[Paragraph("PENGAWAS PEKERJAAN", fcb), Paragraph("PETUGAS SERVICE/", fcb)],
          [Paragraph("Petugas Unit SIMRS", fc), Paragraph("Teknisi", fc)],
          [sig(b64_bytes("kanit_img_b64")), sig(b64_bytes("it_img_b64"))],
-         [nama_cell(dots(ss.get("ttd_pengawas_nama","")), f"NIP: {pnip}" if pnip else ""),
-          nama_cell("Isfan Fajar Anugrah", "NIP: 199709302025211069")]],
+         [nama_cell(dots(ss.get("ttd_pengawas_nama", ""))),
+          nama_cell("Isfan Fajar Anugrah")]],
         colWidths=[8.8*cm, 8.8*cm], rowHeights=[0.42*cm, 0.42*cm, 1.45*cm, None])
     bawah = Table(
         [[Paragraph(f"Cilegon, {xml_escape(dots(tanggal_ttd, 24))}", fc)],
@@ -582,42 +700,186 @@ def show_pdf_preview(pdf_buffer):
         unsafe_allow_html=True)
 
 # ── Input detail form servis (dipakai form baru & edit) ──────
+def _stamp_jam(key):
+    st.session_state[key] = jam_sekarang()
+
+def _auto_detail():
+    """Dipanggil saat teks kendala/solusi berubah: centang jenis kerja & isi peralatan otomatis.
+    Hanya menimpa kalau user belum mengubahnya sendiri."""
+    ss = st.session_state
+    g = tebak_detail(ss.get("in_kendala", ""), ss.get("in_solusi", ""))
+    prev = ss.get("_auto_prev", {"Peralatan": "", "Jenis": []})
+    cur_alat = (ss.get("in_alat", "") or "").strip()
+    if not cur_alat or cur_alat == prev["Peralatan"]:
+        ss["in_alat"] = g["Peralatan"]
+    cur_j = sorted(k for k, _ in JENIS_PEKERJAAN if ss.get(f"in_jn_{k}"))
+    if not cur_j or cur_j == sorted(prev["Jenis"]):
+        for k, _ in JENIS_PEKERJAAN:
+            ss[f"in_jn_{k}"] = k in g["Jenis"]
+    ss["_auto_prev"] = g
+
 def detail_inputs(prefix, e=None):
+    """Mode baru (e=None): nilai disimpan di session_state (bisa diisi otomatis).
+    Mode edit (e=entri): nilai awal dari entri."""
     new = e is None
     e = e or {}
-    opsi = [f"{k}. {v}" for k, v in JENIS_PEKERJAAN]
-    with st.expander("📄 Detail form servis (opsional — mengisi form kertas di lampiran)"):
-        tgl   = st.text_input("Tanggal pekerjaan (TGL/BLN/THN)",
-                              value=e.get("Tanggal", tanggal_hari_ini() if new else ""), key=f"{prefix}_tgl")
-        noreg = st.text_input("No. Reg", value=e.get("NoReg", ""), key=f"{prefix}_noreg")
-        alat  = st.text_input("Nama peralatan / inventaris (Nama/Merk/Type)",
-                              value=e.get("Peralatan", ""), key=f"{prefix}_alat")
+    ss = st.session_state
+    if new:
+        ss.setdefault("in_tgl", hari_ini_wib())
+        for k_, v_ in (("in_alat", ""), ("in_mjam", ""), ("in_sjam", ""), ("in_lain", ""),
+                       ("in_sc", ""), ("in_durasi", 30)):
+            ss.setdefault(k_, v_)
+        for k, _ in JENIS_PEKERJAAN:
+            ss.setdefault(f"in_jn_{k}", False)
+
+    with st.expander("📄 Detail form servis (diisi otomatis, tinggal cek)", expanded=new):
+        # --- tanggal ---
+        if new:
+            tgl_d = st.date_input("Tanggal pekerjaan", key="in_tgl", format="DD/MM/YYYY")
+        else:
+            tgl_awal = parse_tanggal_id(e.get("Tanggal"))
+            try:
+                tgl_d = st.date_input("Tanggal pekerjaan (kosong = belum diisi)", value=tgl_awal,
+                                      key=f"{prefix}_tgl", format="DD/MM/YYYY")
+            except TypeError:
+                tgl_d = st.date_input("Tanggal pekerjaan", value=tgl_awal or hari_ini_wib(),
+                                      key=f"{prefix}_tgl", format="DD/MM/YYYY")
+
+        # --- peralatan ---
+        if new:
+            alat = st.text_input("Nama peralatan / inventaris (otomatis dari kendala, bisa diubah)", key="in_alat")
+        else:
+            alat = st.text_input("Nama peralatan / inventaris", value=e.get("Peralatan", ""), key=f"{prefix}_alat")
+
+        # --- jam ---
         c1, c2 = st.columns(2)
         with c1:
-            m_tgl = st.text_input("Mulai tgl", value=e.get("Mulai_Tgl", ""), key=f"{prefix}_mtgl")
-            m_jam = st.text_input("Mulai jam", value=e.get("Mulai_Jam", ""), key=f"{prefix}_mjam")
+            if new:
+                m_jam = st.text_input("Jam mulai (mis. 09.00)", key="in_mjam")
+                st.button("⏱ Mulai = sekarang", key="btn_mjam", on_click=_stamp_jam, args=("in_mjam",))
+            else:
+                m_jam = st.text_input("Jam mulai", value=e.get("Mulai_Jam", ""), key=f"{prefix}_mjam")
         with c2:
-            s_tgl = st.text_input("Selesai tgl", value=e.get("Selesai_Tgl", ""), key=f"{prefix}_stgl")
-            s_jam = st.text_input("Selesai jam", value=e.get("Selesai_Jam", ""), key=f"{prefix}_sjam")
-        jenis_def = [o for o in opsi if o[0] in e.get("Jenis", [])]
-        jenis = st.multiselect("Solusi / tindakan (dilingkari di form)", opsi,
-                               default=jenis_def, key=f"{prefix}_jenis")
-        lain  = st.text_input("Lainnya (f.)", value=e.get("Lainnya", ""), key=f"{prefix}_lain")
+            if new:
+                s_jam = st.text_input("Jam selesai (mis. 09.45)", key="in_sjam")
+                st.button("⏱ Selesai = sekarang", key="btn_sjam", on_click=_stamp_jam, args=("in_sjam",))
+            else:
+                s_jam = st.text_input("Jam selesai", value=e.get("Selesai_Jam", ""), key=f"{prefix}_sjam")
+        if new:
+            st.selectbox("Lama pengerjaan (menit) — dipakai kalau jam mulai dikosongkan",
+                         [10, 15, 20, 30, 45, 60, 90, 120], key="in_durasi")
+            st.caption("Kosongkan jam → otomatis: selesai = jam saat disimpan, mulai = selesai dikurangi lama pengerjaan "
+                       "(hanya kalau tanggalnya hari ini).")
+
+        # --- solusi/tindakan: centang ---
+        st.markdown("**Solusi dan tindakan/pekerjaan** (otomatis tercentang dari teks, bisa diubah)")
+        jenis_huruf = []
+        for k, label in JENIS_PEKERJAAN:
+            if new:
+                ok = st.checkbox(f"{k}. {label}", key=f"in_jn_{k}")
+            else:
+                ok = st.checkbox(f"{k}. {label}", value=(k in e.get("Jenis", [])), key=f"{prefix}_jn_{k}")
+            if ok:
+                jenis_huruf.append(k)
+        if new:
+            lain = st.text_input("f. Lainnya", key="in_lain")
+        else:
+            lain = st.text_input("f. Lainnya", value=e.get("Lainnya", ""), key=f"{prefix}_lain")
+
+        # --- suku cadang ---
         sc_def = "\n".join(f"{r.get('nama','')} | {r.get('volume','')} | {r.get('satuan','')}"
                            for r in e.get("SukuCadang", []))
-        sc_txt = st.text_area("Penggantian suku cadang (1 baris: Nama | Volume | Satuan)",
-                              value=sc_def, key=f"{prefix}_sc")
+        if new:
+            sc_txt = st.text_area("Penggantian suku cadang (1 baris: Nama | Volume | Satuan)", key="in_sc")
+        else:
+            sc_txt = st.text_area("Penggantian suku cadang (1 baris: Nama | Volume | Satuan)",
+                                  value=sc_def, key=f"{prefix}_sc")
+
     suku = []
     for ln in sc_txt.split("\n"):
         if ln.strip():
             parts = [x.strip() for x in ln.split("|")] + ["", ""]
             suku.append({"nama": parts[0], "volume": parts[1], "satuan": parts[2]})
-    jenis_huruf = [o[0] for o in jenis]
     if lain.strip() and "f" not in jenis_huruf:
         jenis_huruf.append("f")
-    return {"Tanggal": tgl, "NoReg": noreg, "Peralatan": alat,
-            "Mulai_Tgl": m_tgl, "Mulai_Jam": m_jam, "Selesai_Tgl": s_tgl, "Selesai_Jam": s_jam,
+    return {"Tanggal": tanggal_fmt(tgl_d) if tgl_d else "", "NoReg": e.get("NoReg", ""), "Peralatan": alat,
+            "Mulai_Tgl": e.get("Mulai_Tgl", ""), "Mulai_Jam": m_jam.strip(),
+            "Selesai_Tgl": e.get("Selesai_Tgl", ""), "Selesai_Jam": s_jam.strip(),
             "Jenis": jenis_huruf, "Lainnya": lain.strip(), "SukuCadang": suku}
+
+def lengkapi_entry(e, live):
+    """Lengkapi entri sebelum disimpan/preview.
+    live=True (input langsung): jam kosong diisi otomatis bila tanggal = hari ini.
+    Selalu: tebak peralatan/jenis kalau kosong, dan samakan Bulan dengan tanggal."""
+    warn = []
+    ss = st.session_state
+    if live and e.get("Tanggal") == tanggal_hari_ini():
+        if not e.get("Selesai_Jam"):
+            e["Selesai_Jam"] = jam_sekarang()
+        if not e.get("Mulai_Jam"):
+            sel = _jam_ke_menit(e["Selesai_Jam"])
+            if sel is not None:
+                e["Mulai_Jam"] = _menit_ke_jam(sel - int(ss.get("in_durasi", 30)))
+    g = tebak_detail(e.get("Kendala", ""), e.get("Solusi", ""))
+    if not (e.get("Peralatan") or "").strip():
+        e["Peralatan"] = g["Peralatan"]
+    if not e.get("Jenis") and not e.get("Lainnya"):
+        e["Jenis"] = g["Jenis"]
+    d = parse_tanggal_id(e.get("Tanggal"))
+    if d:
+        bln = BULAN_ID[d.month - 1]
+        if bln in BULAN_TRIWULAN:
+            e["Bulan"] = bln
+        else:
+            warn.append(f"Tanggal {e['Tanggal']} di luar {selected_triwulan}; Bulan tetap {e.get('Bulan')}.")
+    return e, warn
+
+# ── Papan tanda tangan di layar (user tanda tangan pakai jari) ──
+class _Bytes:
+    def __init__(self, b): self._b = b
+    def getvalue(self): return self._b
+
+def _reset_pad():
+    st.session_state["pad_n"] = st.session_state.get("pad_n", 0) + 1
+
+def canvas_to_upload(img):
+    """Array RGBA dari kanvas → objek ber-getvalue() (PNG), atau None kalau kosong."""
+    import numpy as np
+    from PIL import Image as PILImage
+    arr = np.asarray(img)
+    if arr.ndim != 3 or arr.shape[2] < 3:
+        return None
+    alpha = arr[..., 3] if arr.shape[2] == 4 else np.full(arr.shape[:2], 255)
+    tinta = ((arr[..., :3].max(axis=2) < 150) & (alpha > 0)).sum()
+    if tinta < 40:                       # kosong / cuma titik tak sengaja
+        return None
+    out = io.BytesIO()
+    PILImage.fromarray(arr.astype("uint8")).save(out, "PNG")
+    return _Bytes(out.getvalue())
+
+def ttd_pad(key):
+    """Kanvas ttd. Return objek getvalue() kalau sudah ada coretan, selain itu None."""
+    try:
+        from streamlit_drawable_canvas import st_canvas
+    except Exception:
+        st.caption("⚠️ Papan ttd belum aktif: tambahkan `streamlit-drawable-canvas` ke requirements.txt "
+                   "lalu redeploy. Sementara pakai upload/foto di bawah.")
+        return None
+    n = st.session_state.get("pad_n", 0)
+    kw = dict(stroke_width=3, stroke_color="#000000", background_color="#FFFFFF",
+              height=170, width=320, drawing_mode="freedraw", update_streamlit=True,
+              key=f"{key}_{n}")
+    try:
+        try:
+            res = st_canvas(return_image_data=True, **kw)     # versi baru
+        except TypeError:
+            res = st_canvas(**kw)                             # versi lama
+        img = res.image_data
+    except Exception as ex:
+        st.caption(f"⚠️ Papan ttd error: {ex}")
+        return None
+    st.button("🗑️ Hapus / ulangi ttd", key=f"clr_{key}", on_click=_reset_pad)
+    return canvas_to_upload(img) if img is not None else None
 
 # ── UI ────────────────────────────────────────────────────────
 st.title("🖥️ Buat push dukung bukti EKIN")
@@ -664,11 +926,8 @@ if "ttd_cfg" not in st.session_state:
     st.session_state.ttd_cfg = cfg_loaded
     st.session_state.ttd_fid = fid_loaded
     st.session_state.setdefault("ttd_pengawas_nama", cfg_loaded.get("kanit_nama", ""))
-    st.session_state.setdefault("ttd_pengawas_nip",  cfg_loaded.get("kanit_nip", ""))
 
-st.session_state.setdefault("ttd_tanggal", tanggal_hari_ini())
-
-with st.expander("✍️ Tanda Tangan (muncul di akhir PDF)"):
+with st.expander("✍️ TTD Permanen IT & Kanit (upload foto sekali, tersimpan di Drive)"):
     cfg_t = st.session_state.ttd_cfg
     if not st.session_state.ttd_fid:
         st.warning(f"File `{TTD_JSON}` belum ada di folder Drive. Buat file teks kosong dengan nama itu "
@@ -687,7 +946,6 @@ with st.expander("✍️ Tanda Tangan (muncul di akhir PDF)"):
             st.image(base64.b64decode(cfg_t["kanit_img_b64"]), width=140)
         st.file_uploader("Ganti/upload TTD Kanit", type=["png","jpg","jpeg"], key="ttd_kanit_up")
         st.text_input("Nama Kanit / Pengawas (Petugas Unit SIMRS)", key="ttd_pengawas_nama")
-        st.text_input("NIP Kanit (opsional)", key="ttd_pengawas_nip")
 
     if st.button("💾 Simpan Permanen ke Drive"):
         if not st.session_state.ttd_fid:
@@ -700,7 +958,6 @@ with st.expander("✍️ Tanda Tangan (muncul di akhir PDF)"):
                 if st.session_state.get("ttd_kanit_up"):
                     new_cfg["kanit_img_b64"] = img_to_b64(st.session_state.ttd_kanit_up)
                 new_cfg["kanit_nama"] = st.session_state.get("ttd_pengawas_nama", "")
-                new_cfg["kanit_nip"]  = st.session_state.get("ttd_pengawas_nip", "")
                 save_json(service, new_cfg, st.session_state.ttd_fid)
                 st.session_state.ttd_cfg = new_cfg
                 st.success("✅ TTD IT & Kanit tersimpan permanen.")
@@ -708,9 +965,7 @@ with st.expander("✍️ Tanda Tangan (muncul di akhir PDF)"):
             except Exception as e:
                 st.error(f"❌ Gagal menyimpan: {e}")
 
-    st.divider()
-    st.text_input("Tanggal (otomatis hari ini, bisa diubah)", key="ttd_tanggal")
-    st.caption("TTD user diisi per laporan di form input / tab Edit, jadi nempel di tiap baris tabel.")
+    st.caption("TTD user tidak perlu diupload: digambar langsung di layar tiap laporan (kanvas).")
 
 st.divider()
 
@@ -728,13 +983,38 @@ _bln_now = BULAN_ID[datetime.now(WIB).month - 1]
 if st.session_state.get("in_bulan") not in BULAN_TRIWULAN:
     st.session_state.in_bulan = _bln_now if _bln_now in BULAN_TRIWULAN else BULAN_TRIWULAN[0]
 
+def entry_jam(e):
+    return e.get("Selesai_Jam") or "-"
+
 def _fill_form(entry):
+    ss = st.session_state
     if entry["Bulan"] in BULAN_TRIWULAN:
-        st.session_state.in_bulan = entry["Bulan"]
-    st.session_state.in_unit    = entry["Unit"]
-    st.session_state.in_kendala = entry["Kendala"]
-    st.session_state.in_solusi  = entry["Solusi"]
-    st.session_state.in_pelapor = entry.get("Pelapor", "")
+        ss.in_bulan = entry["Bulan"]
+    ss.in_unit    = entry["Unit"]
+    ss.in_kendala = entry["Kendala"]
+    ss.in_solusi  = entry["Solusi"]
+    ss.in_pelapor = entry.get("Pelapor", "")
+    d = parse_tanggal_id(entry.get("Tanggal"))
+    if d:
+        ss.in_tgl = d
+    if entry.get("Mulai_Jam"):
+        ss.in_mjam = entry["Mulai_Jam"]
+    _auto_detail()
+
+def _reset_input_form():
+    """Kosongkan form input setelah simpan (dipanggil di awal run berikutnya)."""
+    ss = st.session_state
+    for k in ("in_unit", "in_kendala", "in_solusi", "in_pelapor", "in_alat",
+              "in_mjam", "in_sjam", "in_lain", "in_sc"):
+        ss[k] = ""
+    for k, _ in JENIS_PEKERJAAN:
+        ss[f"in_jn_{k}"] = False
+    ss["in_tgl"] = hari_ini_wib()
+    ss["_auto_prev"] = {"Peralatan": "", "Jenis": []}
+    _reset_pad()
+
+if st.session_state.pop("_reset_in", False):
+    _reset_input_form()
 
 with tab1:
     with st.expander("📋 Paste laporan dari WhatsApp"):
@@ -743,6 +1023,17 @@ with tab1:
         wa_text = st.text_area("Tempel teks WA di sini", height=180, key="wa_text")
         if wa_text.strip():
             parsed = parse_wa_report(wa_text, st.session_state.in_bulan)
+            plus = st.selectbox("Jam selesai (perkiraan) untuk entri yang punya jam pesan WA",
+                                ["Kosongkan", "+15 menit", "+30 menit", "+45 menit", "+60 menit"],
+                                key="wa_plus",
+                                help="Jam mulai diambil dari jam pesan WA. Jam selesai tidak ada di pesan, "
+                                     "jadi default dikosongkan; pilih kalau mau diisi perkiraan.")
+            if plus != "Kosongkan":
+                tambah = int(plus.split()[0].replace("+", ""))
+                for e_ in parsed:
+                    mu = _jam_ke_menit(e_.get("Mulai_Jam"))
+                    if mu is not None and not e_.get("Selesai_Jam"):
+                        e_["Selesai_Jam"] = _menit_ke_jam(mu + tambah)
             luar = [e for e in parsed if e["Bulan"] not in BULAN_TRIWULAN]
             if luar:
                 for e in luar:
@@ -751,7 +1042,12 @@ with tab1:
                            f"Bulannya diganti ke **{st.session_state.in_bulan}**. "
                            f"Kalau salah, pilih triwulan yang benar di atas.")
             st.write(f"Terbaca **{len(parsed)}** entri:")
-            st.dataframe(parsed, use_container_width=True)
+            st.dataframe(parsed)
+            tanpa_tgl = [e for e in parsed if not e.get("Tanggal")]
+            if tanpa_tgl:
+                st.info(f"ℹ️ {len(tanpa_tgl)} entri tidak punya tanggal di teks WA (tidak ada `Tanggal:` / "
+                        f"timestamp chat). Tanggalnya dibiarkan kosong, bukan diisi hari ini. "
+                        f"Isi lewat tab Edit kalau perlu.")
             lengkap = all(e["Unit"] and e["Kendala"] and e["Solusi"] for e in parsed)
             if not lengkap:
                 st.warning("⚠️ Ada entri yang belum lengkap (Unit/Kendala/Solusi kosong). "
@@ -764,6 +1060,7 @@ with tab1:
                     with st.spinner("Menyimpan ke Drive..."):
                         try:
                             data, fid = load_json(service, JSON_NAME)
+                            parsed = [lengkapi_entry(dict(e_), live=False)[0] for e_ in parsed]
                             data.extend(parsed)
                             save_json(service, data, fid)
                             upload_pdf(service, generate_pdf(data, PDF_TITLE, HDR_TEXT, ROMAWI), PDF_NAME)
@@ -771,29 +1068,40 @@ with tab1:
                         except Exception as e:
                             st.error(f"❌ Terjadi kesalahan: {e}")
 
-    with st.form("form_laporan"):
-        bulan   = st.selectbox("Bulan", BULAN_TRIWULAN, key="in_bulan")
-        unit    = st.text_input("Lokasi / Unit", key="in_unit")
-        kendala = st.text_area("Jenis Kendala / Pekerjaan", key="in_kendala")
-        solusi  = st.text_area("Tindakan / Solusi", key="in_solusi")
-        pelapor = st.text_input("Nama Pelapor / User", key="in_pelapor")
-        ttd_up  = st.file_uploader("TTD Pelapor (opsional — di HP bisa langsung foto)",
-                                   type=["png","jpg","jpeg"], key="in_ttd")
-        detail = detail_inputs("in")
-        col1, col2 = st.columns(2)
-        with col1: preview_btn = st.form_submit_button("🔍 Preview PDF")
-        with col2: submit_btn  = st.form_submit_button("✅ Konfirmasi & Update Laporan")
+    if "_flash" in st.session_state:
+        st.success(st.session_state.pop("_flash"))
+
+    bulan   = st.selectbox("Bulan", BULAN_TRIWULAN, key="in_bulan")
+    unit    = st.text_input("Lokasi / Unit", key="in_unit")
+    kendala = st.text_area("Jenis Kendala / Pekerjaan", key="in_kendala", on_change=_auto_detail)
+    solusi  = st.text_area("Tindakan / Solusi", key="in_solusi", on_change=_auto_detail)
+    pelapor = st.text_input("Nama Pelapor / User", key="in_pelapor")
+    detail  = detail_inputs("in")
+
+    st.markdown("**✍️ TTD User** — sodorkan HP, user coret pakai jari")
+    pad_new = ttd_pad("pad_new")
+    if pad_new:
+        st.caption("✅ ttd terbaca, siap disimpan bersama laporan.")
+
+    col1, col2 = st.columns(2)
+    with col1: preview_btn = st.button("🔍 Preview PDF")
+    with col2: submit_btn  = st.button("✅ Konfirmasi & Update Laporan", type="primary")
+
+    def _entri_baru():
+        e_ = {"Bulan": bulan, "Unit": unit, "Kendala": kendala, "Solusi": solusi,
+              "Pelapor": pelapor,
+              "TTD_User": ttd_user_to_b64(pad_new) if pad_new else "", **detail}
+        return lengkapi_entry(e_, live=True)
 
     if preview_btn:
         if not unit or not kendala or not solusi:
             st.warning("⚠️ Isi semua field dulu untuk preview.")
         else:
             data, _ = load_json(service, JSON_NAME)
-            preview  = data + [{"Bulan":bulan,"Unit":unit,"Kendala":kendala,"Solusi":solusi,
-                                "Pelapor":pelapor,
-                                "TTD_User": ttd_user_to_b64(ttd_up) if ttd_up else "", **detail}]
-            st.info(f"👁️ Preview {len(preview)} entri (belum tersimpan ke Drive)")
-            show_pdf_preview(generate_pdf(preview, PDF_TITLE, HDR_TEXT, ROMAWI))
+            entri, warn = _entri_baru()
+            for w_ in warn: st.warning("⚠️ " + w_)
+            st.info(f"👁️ Preview {len(data)+1} entri (belum tersimpan ke Drive)")
+            show_pdf_preview(generate_pdf(data + [entri], PDF_TITLE, HDR_TEXT, ROMAWI))
 
     if submit_btn:
         if not unit or not kendala or not solusi:
@@ -802,14 +1110,17 @@ with tab1:
             with st.spinner("Menyimpan ke Drive..."):
                 try:
                     data, fid = load_json(service, JSON_NAME)
-                    data.append({"Bulan":bulan,"Unit":unit,
-                                 "Kendala":kendala,"Solusi":solusi,
-                                 "Pelapor":pelapor,
-                                 "TTD_User": ttd_user_to_b64(ttd_up) if ttd_up else "", **detail})
+                    entri, warn = _entri_baru()
+                    data.append(entri)
                     save_json(service, data, fid)
                     upload_pdf(service, generate_pdf(data, PDF_TITLE, HDR_TEXT, ROMAWI), PDF_NAME)
-
-                    st.success(f"✅ Berhasil! **{PDF_NAME}** diperbarui di Drive.")
+                    ket = (f"{entri['Tanggal']} | jam {entri.get('Mulai_Jam') or '-'}–{entry_jam(entri)} | "
+                           f"peralatan: {entri.get('Peralatan') or '-'} | "
+                           f"jenis: {', '.join(entri.get('Jenis', [])) or '-'}")
+                    st.session_state["_flash"] = (f"✅ Tersimpan. **{PDF_NAME}** diperbarui di Drive.  \n"
+                                                  f"📝 {ket}" + ("".join(f"  \n⚠️ {w_}" for w_ in warn)))
+                    st.session_state["_reset_in"] = True
+                    st.rerun()
                 except Exception as e:
                     st.error(f"❌ Terjadi kesalahan: {e}")
 
@@ -843,6 +1154,8 @@ with tab2:
             if st.session_state.edit_index == i:
                 with st.container(border=True):
                     st.markdown(f"#### ✏️ Edit Entri #{i+1}")
+                    with st.expander("✍️ TTD User — coret di layar (kosong = tidak berubah)"):
+                        pad_edit = ttd_pad(f"pad_e{i}")
                     with st.form(key=f"form_edit_{i}"):
                         e_bulan = st.selectbox(
                             "Bulan",
@@ -861,8 +1174,6 @@ with tab2:
                         if entry.get("TTD_User"):
                             st.caption("TTD tersimpan saat ini:")
                             st.image(base64.b64decode(entry["TTD_User"]), width=120)
-                        e_ttd = st.file_uploader("Ganti/tambah TTD Pelapor (kosongkan = tidak berubah)",
-                                                 type=["png","jpg","jpeg"], key=f"e_ttd_{i}")
                         e_detail = detail_inputs(f"e{i}", entry)
                         col_save, col_cancel = st.columns(2)
                         with col_save:
@@ -877,19 +1188,21 @@ with tab2:
                         else:
                             with st.spinner("Menyimpan perubahan ke Drive..."):
                                 try:
-                                    data[i] = {
+                                    data[i], _w = lengkapi_entry({
                                         "Bulan":   e_bulan,
                                         "Unit":    e_unit,
                                         "Kendala": e_kendala,
                                         "Solusi":  e_solusi,
                                         "Pelapor": e_pelapor,
-                                        "TTD_User": ttd_user_to_b64(e_ttd) if e_ttd
+                                        "TTD_User": ttd_user_to_b64(pad_edit) if pad_edit
                                                     else entry.get("TTD_User", ""),
                                         **e_detail,
-                                    }
+                                    }, live=False)
+                                    for w_ in _w: st.warning("⚠️ " + w_)
                                     save_json(service, data, fid)
                                     upload_pdf(service, generate_pdf(data, PDF_TITLE, HDR_TEXT, ROMAWI), PDF_NAME)
                                     st.success("✅ Entri berhasil diperbarui!")
+                                    _reset_pad()
                                     st.session_state.edit_index = None
                                     st.rerun()
                                 except Exception as e:
@@ -905,6 +1218,8 @@ with tab2:
                 with c1:
                     st.markdown(
                         f"**{i+1}. {entry.get('Bulan','-')} | {entry.get('Unit','-')}**  \n"
+                        f"📅 {entry.get('Tanggal') or '⚠️ tanggal belum diisi'}  "
+                        f"🕘 {entry.get('Mulai_Jam') or '-'}–{entry.get('Selesai_Jam') or '-'}  \n"
                         f"🔧 {entry.get('Kendala','-')}  \n"
                         f"✅ {entry.get('Solusi','-')}  \n"
                         f"👤 {entry.get('Pelapor') or '-'} "
