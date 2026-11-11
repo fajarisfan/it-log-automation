@@ -142,34 +142,98 @@ def load_ttd(service):
     return (json.loads(raw) if raw else {}), fid
 
 def clean_signature(im, max_w):
-    """Hapus latar kertas dari foto/scan ttd → hanya tinta (transparan), lalu crop rapat."""
+    """Foto/scan ttd -> hanya tinta (latar transparan), dicrop rapat ke GUGUSAN TINTA UTAMA.
+    Bintik, noda kertas, dan benda di tepi foto (meja/keranjang) dibuang."""
     from PIL import Image as PILImage, ImageFilter, ImageOps
     im = ImageOps.exif_transpose(im).convert("RGBA")
-    if im.width > max_w:
-        im = im.resize((max_w, max(1, int(im.height * max_w / im.width))))
-    if im.getchannel("A").getextrema()[0] < 255:
-        return im                       # sudah transparan (PNG) → biarkan
+    if im.getchannel("A").getextrema()[0] < 255:          # sudah transparan (PNG) -> biarkan
+        if im.width > max_w:
+            im = im.resize((max_w, max(1, int(im.height * max_w / im.width))))
+        return im
     try:
         import numpy as np
     except ImportError:
+        if im.width > max_w:
+            im = im.resize((max_w, max(1, int(im.height * max_w / im.width))))
         return im
+
+    # kerja di resolusi menengah supaya detail ttd kecil tidak hilang
+    work_w = 1000
+    if im.width > work_w:
+        im = im.resize((work_w, max(1, int(im.height * work_w / im.width))))
     rgb  = im.convert("RGB")
     gray = rgb.convert("L")
-    # perkiraan terang kertas per area (tahan bayangan/pencahayaan tidak rata)
-    k   = max(3, (gray.width // 25) | 1)
-    bg  = gray.filter(ImageFilter.MaxFilter(k)).filter(ImageFilter.GaussianBlur(max(1, gray.width // 40)))
-    g   = np.asarray(gray, dtype=np.float32)
-    b   = np.maximum(np.asarray(bg, dtype=np.float32), 1.0)
+    # perkiraan terang kertas per area (dihitung di versi kecil biar cepat)
+    sw, sh = max(1, gray.width // 4), max(1, gray.height // 4)
+    small = gray.resize((sw, sh))
+    k = max(3, (sw // 18) | 1)
+    bg_s = small.filter(ImageFilter.MaxFilter(k)).filter(ImageFilter.GaussianBlur(max(1, sw // 30)))
+    bg = bg_s.resize(gray.size, PILImage.BILINEAR)
+    g = np.asarray(gray, dtype=np.float32)
+    b = np.maximum(np.asarray(bg, dtype=np.float32), 1.0)
     ratio = g / b
-    alpha = np.clip((0.88 - ratio) / (0.88 - 0.60), 0.0, 1.0)     # terang kertas → transparan
-    arr   = np.asarray(rgb, dtype=np.float32) * (1.0 - 0.25 * alpha[..., None])  # tinta sedikit lebih tegas
-    arr[alpha < 0.02] = 0.0                                     # buang noise kertas di area transparan
+    alpha = np.clip((0.78 - ratio) / (0.78 - 0.48), 0.0, 1.0)   # hanya yang jelas gelap = tinta
+
+    # --- pilih gugusan tinta utama (grid kasar + flood fill) ---
+    cell = 10
+    H, W = alpha.shape
+    gh, gw = H // cell, W // cell
+    if gh < 3 or gw < 3:
+        keep = np.ones_like(alpha, dtype=bool)
+    else:
+        ink = (alpha[:gh*cell, :gw*cell] > 0.5).reshape(gh, cell, gw, cell).sum(axis=(1, 3))
+        occ = ink >= 3
+        dil = occ.copy()
+        for _ in range(2):                                   # jembatani celah antar goresan
+            d2 = dil.copy()
+            d2[1:, :] |= dil[:-1, :]; d2[:-1, :] |= dil[1:, :]
+            d2[:, 1:] |= dil[:, :-1]; d2[:, :-1] |= dil[:, 1:]
+            d2[1:, 1:] |= dil[:-1, :-1]; d2[:-1, :-1] |= dil[1:, 1:]
+            d2[1:, :-1] |= dil[:-1, 1:]; d2[:-1, 1:] |= dil[1:, :-1]
+            dil = d2
+        lab = np.zeros((gh, gw), dtype=np.int32)
+        comps, nid = [], 0
+        for sy in range(gh):
+            for sx in range(gw):
+                if dil[sy, sx] and lab[sy, sx] == 0:
+                    nid += 1
+                    stack = [(sy, sx)]; lab[sy, sx] = nid; cells = []
+                    while stack:
+                        y, x = stack.pop(); cells.append((y, x))
+                        for dy in (-1, 0, 1):
+                            for dx in (-1, 0, 1):
+                                ny, nx = y + dy, x + dx
+                                if 0 <= ny < gh and 0 <= nx < gw and dil[ny, nx] and lab[ny, nx] == 0:
+                                    lab[ny, nx] = nid; stack.append((ny, nx))
+                    comps.append(cells)
+        best, best_border = None, None
+        for cells in comps:
+            score = sum(int(ink[y, x]) for y, x in cells)
+            touches = any(y in (0, gh-1) or x in (0, gw-1) for y, x in cells)
+            if not touches and (best is None or score > best[0]):
+                best = (score, cells)
+            if best_border is None or score > best_border[0]:
+                best_border = (score, cells)
+        chosen = (best or best_border)
+        keep = np.zeros_like(alpha, dtype=bool)
+        if chosen:
+            for y, x in chosen[1]:
+                keep[y*cell:(y+1)*cell, x*cell:(x+1)*cell] = True
+        else:
+            keep[:] = True
+    alpha = alpha * keep
+    alpha[alpha < 0.05] = 0.0
+
+    arr = np.asarray(rgb, dtype=np.float32) * (1.0 - 0.25 * alpha[..., None])
+    arr[alpha == 0] = 0.0
     out = PILImage.fromarray(np.dstack([arr, alpha * 255.0]).astype(np.uint8), "RGBA")
     box = out.getchannel("A").point(lambda v: 255 if v > 24 else 0).getbbox()
     if box:
-        pad = 4
+        pad = 6
         out = out.crop((max(0, box[0]-pad), max(0, box[1]-pad),
                         min(out.width, box[2]+pad), min(out.height, box[3]+pad)))
+    if out.width > max_w:
+        out = out.resize((max_w, max(1, int(out.height * max_w / out.width))), PILImage.LANCZOS)
     return out
 
 def img_to_b64(uploaded, max_w=700):
@@ -547,7 +611,7 @@ def build_form_flowables(e, nomor, total):
 
     # ── tanda tangan: Pengawas (Kanit) | Teknisi (IT) ; di bawahnya User penerima ──
     def dots(v, n=34): return v.strip() if v and v.strip() else "." * n
-    def sig(raw): return rl_sig(raw, 3.6*cm, 1.35*cm) or ""
+    def sig(raw): return rl_sig(raw, 4.4*cm, 1.8*cm) or ""
     def nama_cell(nama, extra=""):
         t = f"( {xml_escape(nama)} )"
         if extra: t += f"<br/><font size=7>{xml_escape(extra)}</font>"
@@ -559,14 +623,14 @@ def build_form_flowables(e, nomor, total):
          [sig(b64_bytes("kanit_img_b64")), sig(b64_bytes("it_img_b64"))],
          [nama_cell(dots(ss.get("ttd_pengawas_nama", ""))),
           nama_cell("Isfan Fajar Anugrah")]],
-        colWidths=[8.8*cm, 8.8*cm], rowHeights=[0.42*cm, 0.42*cm, 1.45*cm, None])
+        colWidths=[8.8*cm, 8.8*cm], rowHeights=[0.42*cm, 0.42*cm, 1.9*cm, None])
     bawah = Table(
         [[Paragraph(f"Cilegon, {xml_escape(dots(tanggal_ttd, 24))}", fc)],
          [Paragraph("Petugas Yang Menerima", fcb)],
          [Paragraph("Hasil Service / User", fc)],
          [sig(base64.b64decode(e["TTD_User"]) if e.get("TTD_User") else None)],
          [nama_cell(dots(e.get("Pelapor","")))]],
-        colWidths=[17.6*cm], rowHeights=[0.5*cm, 0.42*cm, 0.42*cm, 1.45*cm, None])
+        colWidths=[17.6*cm], rowHeights=[0.5*cm, 0.42*cm, 0.42*cm, 1.9*cm, None])
     for t_ in (atas, bawah):
         t_.setStyle(TableStyle([("ALIGN",(0,0),(-1,-1),"CENTER"),   # gambar ttd di tengah kolom, sejajar nama
                                 ("VALIGN",(0,0),(-1,-1),"TOP"),("TOPPADDING",(0,0),(-1,-1),0),
@@ -577,7 +641,8 @@ def build_form_flowables(e, nomor, total):
     return out
 
 # ── PDF Generator ─────────────────────────────────────────────
-def generate_pdf(all_data, pdf_title="Laporan IT Triwulan I", header_text="LAPORAN IT TRIWULAN I", romawi="I"):
+def generate_pdf(all_data, pdf_title="Laporan IT Triwulan I", header_text="LAPORAN IT TRIWULAN I", romawi="I",
+                 hanya_form=False):
     buf = io.BytesIO()
     nomor_dokumen = f"No: LAP-IT/TW-{romawi}/{datetime.now().year}/RSUD-CLG"
     doc = BaseDocTemplate(buf, pagesize=A4,
@@ -684,7 +749,13 @@ def generate_pdf(all_data, pdf_title="Laporan IT Triwulan I", header_text="LAPOR
             Paragraph(ringkasan_text, s_ringkasan),
         ]
 
-    if st.session_state.get("lampiran", True):
+    if hanya_form:                       # rekap form saja (tanpa tabel ringkasan)
+        elements = []
+        for n, e in enumerate(all_data, 1):
+            if n > 1:
+                elements.append(PageBreak())
+            elements += build_form_flowables(e, n, len(all_data))
+    elif st.session_state.get("lampiran", True):
         for n, e in enumerate(all_data, 1):
             elements.append(PageBreak())
             elements += build_form_flowables(e, n, len(all_data))
@@ -1145,6 +1216,22 @@ with tab2:
                 with st.spinner("Membuat ulang PDF dengan format terbaru..."):
                     upload_pdf(service, generate_pdf(data, PDF_TITLE, HDR_TEXT, ROMAWI), PDF_NAME)
                 st.success("PDF berhasil diperbarui ke Drive dengan format terbaru ✅")
+
+        # ── Download rekap SEMUA FORM (tanpa halaman tabel ringkasan) ──
+        _sig_data = hash(json.dumps(data, sort_keys=True, default=str))
+        col_siap, col_dl = st.columns(2)
+        with col_siap:
+            if st.button("📄 Siapkan Download Semua Form"):
+                with st.spinner("Menyusun semua form..."):
+                    st.session_state["_form_pdf"] = generate_pdf(
+                        data, PDF_TITLE, HDR_TEXT, ROMAWI, hanya_form=True).getvalue()
+                    st.session_state["_form_pdf_hash"] = _sig_data
+        with col_dl:
+            if st.session_state.get("_form_pdf") and st.session_state.get("_form_pdf_hash") == _sig_data:
+                st.download_button("📥 Download Semua Form (PDF)", data=st.session_state["_form_pdf"],
+                                   file_name=f"Form_Servis_{PDF_NAME}", mime="application/pdf")
+            elif st.session_state.get("_form_pdf"):
+                st.caption("Data berubah — klik **Siapkan** lagi biar file terbaru.")
 
         st.divider()
 
