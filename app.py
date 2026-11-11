@@ -568,7 +568,8 @@ def build_form_flowables(e, nomor, total):
          [nama_cell(dots(e.get("Pelapor","")))]],
         colWidths=[17.6*cm], rowHeights=[0.5*cm, 0.42*cm, 0.42*cm, 1.45*cm, None])
     for t_ in (atas, bawah):
-        t_.setStyle(TableStyle([("VALIGN",(0,0),(-1,-1),"TOP"),("TOPPADDING",(0,0),(-1,-1),0),
+        t_.setStyle(TableStyle([("ALIGN",(0,0),(-1,-1),"CENTER"),   # gambar ttd di tengah kolom, sejajar nama
+                                ("VALIGN",(0,0),(-1,-1),"TOP"),("TOPPADDING",(0,0),(-1,-1),0),
                                 ("BOTTOMPADDING",(0,0),(-1,-1),0)]))
     out += [Spacer(1, 0.35*cm), atas, Spacer(1, 0.1*cm), bawah]
     out.append(Paragraph(f"<font size=7 color='#7F8C8D'>Lampiran {nomor} dari {total}</font>",
