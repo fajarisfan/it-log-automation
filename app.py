@@ -3,8 +3,15 @@ import json
 import io
 import base64
 import re
-from xml.sax.saxutils import escape as xml_escape
+from xml.sax.saxutils import escape as _xml_escape
 from datetime import datetime, timedelta, timezone, date
+
+def bersih_pdf(t):
+    """Buang emoji/simbol yang tidak ada di font PDF (Helvetica), supaya tidak jadi kotak hitam."""
+    return str(t).encode("cp1252", "ignore").decode("cp1252")
+
+def xml_escape(t):
+    return _xml_escape(bersih_pdf(t))
 from collections import Counter
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
@@ -611,7 +618,7 @@ def build_form_flowables(e, nomor, total):
 
     # ── tanda tangan: Pengawas (Kanit) | Teknisi (IT) ; di bawahnya User penerima ──
     def dots(v, n=34): return v.strip() if v and v.strip() else "." * n
-    def sig(raw): return rl_sig(raw, 4.4*cm, 1.8*cm) or ""
+    def sig(raw): return rl_sig(raw, 3.6*cm, 1.35*cm) or ""
     def nama_cell(nama, extra=""):
         t = f"( {xml_escape(nama)} )"
         if extra: t += f"<br/><font size=7>{xml_escape(extra)}</font>"
@@ -623,18 +630,20 @@ def build_form_flowables(e, nomor, total):
          [sig(b64_bytes("kanit_img_b64")), sig(b64_bytes("it_img_b64"))],
          [nama_cell(dots(ss.get("ttd_pengawas_nama", ""))),
           nama_cell("Isfan Fajar Anugrah")]],
-        colWidths=[8.8*cm, 8.8*cm], rowHeights=[0.42*cm, 0.42*cm, 1.9*cm, None])
+        colWidths=[8.8*cm, 8.8*cm], rowHeights=[0.42*cm, 0.42*cm, 1.75*cm, None])
     bawah = Table(
         [[Paragraph(f"Cilegon, {xml_escape(dots(tanggal_ttd, 24))}", fc)],
          [Paragraph("Petugas Yang Menerima", fcb)],
          [Paragraph("Hasil Service / User", fc)],
          [sig(base64.b64decode(e["TTD_User"]) if e.get("TTD_User") else None)],
          [nama_cell(dots(e.get("Pelapor","")))]],
-        colWidths=[17.6*cm], rowHeights=[0.5*cm, 0.42*cm, 0.42*cm, 1.9*cm, None])
+        colWidths=[17.6*cm], rowHeights=[0.5*cm, 0.42*cm, 0.42*cm, 1.75*cm, None])
     for t_ in (atas, bawah):
         t_.setStyle(TableStyle([("ALIGN",(0,0),(-1,-1),"CENTER"),   # gambar ttd di tengah kolom, sejajar nama
                                 ("VALIGN",(0,0),(-1,-1),"TOP"),("TOPPADDING",(0,0),(-1,-1),0),
                                 ("BOTTOMPADDING",(0,0),(-1,-1),0)]))
+    atas.setStyle(TableStyle([("VALIGN", (0,2), (-1,2), "MIDDLE")]))     # ttd di tengah ruangnya
+    bawah.setStyle(TableStyle([("VALIGN", (0,3), (-1,3), "MIDDLE")]))
     out += [Spacer(1, 0.35*cm), atas, Spacer(1, 0.1*cm), bawah]
     out.append(Paragraph(f"<font size=7 color='#7F8C8D'>Lampiran {nomor} dari {total}</font>",
                          ParagraphStyle("lamp", parent=f, alignment=2)))
