@@ -319,8 +319,8 @@ _ALAT_RULES = [
     (r"\bscanner\b", "Scanner"),
     (r"\bups\b", "UPS"),
     (r"\bcctv\b", "CCTV"),
-    (r"access point|\bap\b|wifi|wi-fi|hotspot", "Access Point / WiFi"),
     (r"switch|\bhub\b|jaringan|network|\blan\b|internet|router|mikrotik|\butp\b", "Perangkat Jaringan"),
+    (r"access point|\bap\b|wifi|wi-fi|hotspot", "Access Point / WiFi"),
     (r"\bserver\b", "Server"),
     (r"laptop|notebook", "Laptop"),
     (r"\bpc\b|komputer|computer|\bcpu\b|monitor|keyboard|mouse|\bram\b|hardisk|harddisk|\bssd\b|\bpsu\b", "PC / Komputer"),
@@ -329,9 +329,9 @@ _ALAT_RULES = [
 ]
 _JENIS_RULES = [
     ("a", r"bersih|cleaning|\bclean\b|debu|kotor|blower"),
-    ("b", r"install|instal|pasang|kabel|crimp|konektor|\bscan|ganti|colok|konfigurasi|setting|setup|driver"),
+    ("b", r"install|instal|pasang|kabel|crimp|konektor|\bscan|ganti|colok|konfigurasi|setting|setup|driver|reset"),
     ("c", r"database|\bdb\b|mysql|\bsql\b|rdbms|backup|restore|query|oracle|postgres"),
-    ("d", r"aplikasi|simrs|bridging|vclaim|modul|fitur|custom"),
+    ("d", r"aplikasi|bridging|vclaim|modul|fitur|custom"),
     ("e", r"windows|\bos\b|booting|\bboot\b|bsod|blue screen|format|restart|\bhang\b|lemot|lambat|aktivasi|lisensi"),
 ]
 
@@ -360,8 +360,125 @@ _WA_LABELS = [
 ]
 _WA_LABEL_RE = [(k, re.compile(r"^\s*(?:[-•\d.)]+\s*)?(?:%s)\s*[:=]\s*(.*)$" % pat, re.I))
                 for k, pat in _WA_LABELS]
-_WA_PREFIX_RE = re.compile(
-    r"^\[?(\d{1,2})[/.](\d{1,2})[/.](\d{2,4}),?\s+(\d{1,2})[.:](\d{2})(?:[.:]\d{2})?\]?\s*-?\s*[^:]{1,40}:\s*")
+# ── Format pesan WhatsApp yang dikenali ──────────────────────
+_T = r"(?P<h>\d{1,2})[.:](?P<mi>\d{2})(?:[.:]\d{2})?(?:\s?(?P<ap>[AaPp])\.?[Mm]\.?)?"
+_D = r"(?P<d>\d{1,2})[/.\-](?P<mo>\d{1,2})[/.\-](?P<y>\d{2,4})"
+_LRM = "\u200e\u200f\u202f"
+_WA_MSG_RES = [
+    # Android (salin pesan):  [09.10, 11/11/2026] Nama: pesan
+    re.compile(rf"^[{_LRM}]*\[\s*{_T}\s*,\s*{_D}\s*\]\s*(?P<s>[^:]{{1,60}}?):\s*(?P<t>.*)$"),
+    # iOS / varian:           [11/11/26 09.10.05] Nama: pesan
+    re.compile(rf"^[{_LRM}]*\[\s*{_D}\s*,?\s*{_T}\s*\]\s*(?P<s>[^:]{{1,60}}?):\s*(?P<t>.*)$"),
+    # Ekspor chat:            11/11/26 09.10 - Nama: pesan
+    re.compile(rf"^[{_LRM}]*{_D}\s*,?\s*{_T}\s*[-–]\s*(?P<s>[^:]{{1,60}}?):\s*(?P<t>.*)$"),
+]
+_WA_NOISE = re.compile(
+    r"^<?(media omitted|attached:.*|image omitted|video omitted|sticker omitted|gif omitted|"
+    r"document omitted|audio omitted|this message was deleted|pesan ini dihapus|"
+    r"you deleted this message)>?\s*$", re.I)
+
+def _wa_msg_start(line):
+    """Baris awal pesan WA -> {date, jam, sender, text}; None kalau bukan awal pesan."""
+    line = line.strip()
+    for rx in _WA_MSG_RES:
+        m = rx.match(line)
+        if not m:
+            continue
+        y = int(m.group("y")); y = y + 2000 if y < 100 else y
+        h = int(m.group("h")); ap = (m.group("ap") or "").lower()
+        if ap == "p" and h < 12: h += 12
+        if ap == "a" and h == 12: h = 0
+        try:
+            d = date(y, int(m.group("mo")), int(m.group("d")))
+        except ValueError:
+            return None
+        return {"date": d, "jam": f"{h:02d}.{m.group('mi')}",
+                "sender": m.group("s").strip(), "text": m.group("t")}
+    return None
+
+def _wa_clean(t):
+    t = re.sub(r"[*~`]", "", t)
+    t = re.sub(r"(?<!\w)_(.+?)_(?!\w)", r"\1", t)
+    return " ".join(t.split())
+
+def parse_wa_messages(text):
+    """Pecah teks WA menjadi daftar pesan (baris lanjutan digabung ke pesan sebelumnya)."""
+    msgs, cur = [], None
+    for raw in text.replace("\r", "").split("\n"):
+        st_ = _wa_msg_start(raw)
+        if st_:
+            cur = st_; msgs.append(cur)
+        elif cur is not None and raw.strip():
+            cur["text"] += " " + raw.strip()
+    for m in msgs:
+        m["text"] = _wa_clean(m["text"])
+    return [m for m in msgs if m["text"] and not _WA_NOISE.match(m["text"])]
+
+# ── Deteksi nama ruangan/unit dari teks bebas ────────────────
+_UNIT_BUILTIN = [
+    "IGD", "ICU", "ICU 1", "ICU 2", "NICU", "PICU", "HCU", "IBS", "VK", "Perina", "Nusa Indah",
+    "MCU", "PPI", "BDRS", "CSSD", "K3", "Kepegawaian", "Penunjang", "Farmasi", "Gudang Farmasi",
+    "Kasir", "Rekam Medis", "Laboratorium", "Radiologi", "Gizi", "Laundry", "Pendaftaran",
+    "Keuangan", "IPSRS", "Hemodialisa", "Rehab Medik", "Kamar Operasi", "Poli Anak", "Poli Gigi",
+    "Poli Bedah", "Poli Mata", "Poli THT", "Poli Jantung", "Poli Saraf", "Poli Penyakit Dalam",
+    "Poli Kandungan",
+]
+_UNIT_STOP = set("""tidak tak ga gak nggak bisa tdk nya mohon minta tolong komputer pc printer internet
+jaringan wifi simrs sim rs error mati lemot hang yang dan untuk sudah sdh belum kok kenapa ya dong bantu
+bantuannya cek dari di ke ini itu ada sedang lagi pas saat udah koneksi konek lan jam menit pakai
+gunakan periksa ganti perbaiki lihat install instal nyalakan hidupkan print ngeprint scan buka kabel
+admin tim mas mbak pak bu dok dr""".split())
+
+def _norm_unit_tok(w):
+    if any(c.isdigit() for c in w) or w.isupper():
+        return w.upper()
+    return w.capitalize()
+
+def detect_unit(text, known=None, heuristik=True):
+    """Cari nama ruangan: daftar unit yang pernah dipakai + daftar bawaan, lalu tebakan 'di/dari <ruang>'."""
+    t = text or ""
+    cands, seen = [], set()
+    for c in list(known or []) + _UNIT_BUILTIN:
+        c = (c or "").strip()
+        if len(c) >= 2 and c.lower() not in seen:
+            seen.add(c.lower()); cands.append(c)
+    best = None
+    for name in cands:
+        pat = r"(?<![A-Za-z0-9])" + r"\s*".join(re.escape(x) for x in name.split()) + r"(?![A-Za-z0-9])"
+        if re.search(pat, t, re.I) and (best is None or len(name) > len(best)):
+            best = name
+    if best:
+        return best
+    if not heuristik:
+        return ""
+    nama_re = r"([A-Za-z0-9][\w\-/.]*(?:\s+[A-Za-z0-9][\w\-/.]*){0,2})"
+    # 1) kata penanda yang jelas: unit / ruang / poli / bagian / instalasi / bangsal
+    m = re.search(r"\b(unit|ruang|ruangan|poli|bagian|instalasi|bangsal)\s+" + nama_re, t, re.I)
+    pre = m.group(1).lower() if m else ""
+    grup = m.group(2) if m else ""
+    # 2) "di <Ruang>" / "dari <Ruang>": hanya dipercaya kalau diawali huruf kapital
+    if not m:
+        for m2 in re.finditer(r"\b(?:di|dari)\s+" + nama_re, t, re.I):
+            if m2.group(1)[0].isupper():
+                grup = m2.group(1)
+                break
+    if grup:
+        toks = []
+        for w in grup.split():
+            if w.lower().strip(".,") in _UNIT_STOP:
+                break
+            toks.append(w.strip(".,"))
+        if toks:
+            nama = " ".join(_norm_unit_tok(x) for x in toks)
+            if pre in ("ruangan",):
+                pre = "ruang"
+            return (pre.capitalize() + " " + nama) if pre in ("poli", "bangsal", "instalasi", "ruang") else nama
+    return ""
+
+_ACK_RE = re.compile(r"^(siap|ok|oke|baik|sip|noted|otw|ya|iya|mohon ditunggu|ditunggu|segera|izin|ijin|"
+                     r"terima kasih|makasih|trims|thanks|baik pak|baik bu)\b", re.I)
+def _is_ack(t):
+    return len(t.strip()) <= 40 and _ACK_RE.match(t.strip()) is not None
 
 def _bulan_from_text(txt):
     if not txt:
@@ -374,9 +491,65 @@ def _bulan_from_text(txt):
         return BULAN_ID[int(m.group(2)) - 1]
     return None
 
-def parse_wa_report(text, default_bulan):
-    """Ubah teks laporan WA jadi list entri {Bulan, Unit, Kendala, Solusi}."""
+def _has_labels(text):
+    for raw in text.replace("\r", "").split("\n"):
+        st_ = _wa_msg_start(raw)
+        line = st_["text"] if st_ else raw
+        line = re.sub(r"[*~`]", "", line)
+        if any(rx.match(line) for _, rx in _WA_LABEL_RE):
+            return True
+    return False
+
+def _parse_wa_conversation(msgs, default_bulan, known_units, it_names, reply_all=True, pelapor_units=None):
+    """Percakapan WA: pesan user = kendala (+ jam mulai), balasan IT = solusi (+ jam selesai)."""
+    it_names = [n.strip().lower() for n in (it_names or []) if n.strip()]
+    def is_it(sender):
+        return any(n in sender.lower() for n in it_names)
+    tickets, cur = [], None
+    for m in msgs:
+        if is_it(m["sender"]):
+            if cur is None or _is_ack(m["text"]):
+                continue
+            terbuka = [tk for tk in tickets if not tk["solusi"]]
+            for tk in (terbuka if (reply_all and terbuka) else [cur]):
+                tk["solusi"].append(m["text"]); tk["selesai"] = (m["date"], m["jam"])
+        else:
+            if _is_ack(m["text"]):
+                continue
+            if cur is not None and not cur["solusi"] and cur["sender"] == m["sender"]:
+                cur["kendala"].append(m["text"])           # pesan lanjutan pelapor yang sama
+            else:
+                cur = {"sender": m["sender"], "date": m["date"], "jam": m["jam"],
+                       "kendala": [m["text"]], "solusi": [], "selesai": None}
+                tickets.append(cur)
+    out = []
+    for tk in tickets:
+        kendala, solusi = " ".join(tk["kendala"]), " ".join(tk["solusi"])
+        pelapor = "" if re.match(r"^[+\d][\d\s\-+()]{6,}$", tk["sender"]) else tk["sender"]
+        e = {"Bulan": BULAN_ID[tk["date"].month - 1], "Unit": detect_unit(kendala, known_units) or
+             detect_unit(solusi, known_units, heuristik=False) or
+             (pelapor_units or {}).get(pelapor.strip().lower(), ""), "Kendala": kendala, "Solusi": solusi,
+             "Pelapor": pelapor, "Tanggal": tanggal_fmt(tk["date"]), "Mulai_Jam": tk["jam"],
+             "Selesai_Jam": tk["selesai"][1] if tk["selesai"] else ""}
+        if tk["selesai"] and tk["selesai"][0] != tk["date"]:
+            e["Selesai_Tgl"] = tanggal_fmt(tk["selesai"][0])
+        out.append(e)
+    return out
+
+def parse_wa_report(text, default_bulan, known_units=None, it_names=None, reply_all=True, pelapor_units=None):
+    """Ubah teks WA jadi list entri. Tiga mode:
+    1) berlabel (Unit:/Kendala:/Solusi:)  2) percakapan WA (timestamp + pengirim)  3) teks bebas."""
     text = text.replace("\r", "")
+    if not _has_labels(text):
+        msgs = parse_wa_messages(text)
+        if msgs:
+            return _parse_wa_conversation(msgs, default_bulan, known_units, it_names, reply_all, pelapor_units)
+        flat = _wa_clean(text)
+        if not flat:
+            return []
+        return [{"Bulan": default_bulan, "Unit": detect_unit(flat, known_units), "Kendala": flat,
+                 "Solusi": "", "Pelapor": "", "Tanggal": "", "Mulai_Jam": "", "Selesai_Jam": ""}]
+
     text = re.sub(r"[*~`]", "", text)
     text = re.sub(r"(?<!\w)_(.+?)_(?!\w)", r"\1", text)
     entries, cur, field = [], {}, None
@@ -384,31 +557,28 @@ def parse_wa_report(text, default_bulan):
     def push():
         nonlocal cur
         if cur:
-            # tanggal: label "Tanggal:" lengkap > tanggal pesan WA (prefix chat) > kosong
             d_wa = parse_tanggal_id(cur.get("tanggal")) or cur.get("_tgl")
-            jam_wa = cur.get("_jam", "")
             bulan = (BULAN_ID[d_wa.month - 1] if d_wa else None) \
                     or _bulan_from_text(cur.get("bulan")) or _bulan_from_text(cur.get("tanggal")) \
                     or default_bulan
-            entries.append({"Bulan": bulan, "Unit": cur.get("unit", "").strip(),
+            unit = cur.get("unit", "").strip() or detect_unit(cur.get("kendala", ""), known_units) \
+                   or detect_unit(cur.get("solusi", ""), known_units, heuristik=False)
+            entries.append({"Bulan": bulan, "Unit": unit,
                             "Kendala": cur.get("kendala", "").strip(),
                             "Solusi": cur.get("solusi", "").strip(),
                             "Pelapor": cur.get("pelapor", "").strip(),
                             "Tanggal": tanggal_fmt(d_wa) if d_wa else "",
-                            "Mulai_Jam": jam_wa})
+                            "Mulai_Jam": cur.get("_jam", ""), "Selesai_Jam": ""})
         cur = {}
 
     last_ts = None
     for raw in text.split("\n"):
-        pm = _WA_PREFIX_RE.match(raw)
-        if pm:
-            y = int(pm.group(3)); y = y + 2000 if y < 100 else y
-            try:
-                last_ts = (date(y, int(pm.group(2)), int(pm.group(1))),
-                           f"{int(pm.group(4)):02d}.{pm.group(5)}")
-            except ValueError:
-                last_ts = None
-        line = _WA_PREFIX_RE.sub("", raw).rstrip()
+        st_ = _wa_msg_start(raw)
+        if st_:
+            last_ts = (st_["date"], st_["jam"])
+            line = st_["text"].rstrip()
+        else:
+            line = raw.rstrip()
         if not line.strip():
             field = None
             continue
@@ -430,12 +600,7 @@ def parse_wa_report(text, default_bulan):
             cur[field] = (cur.get(field, "") + " " + line.strip()).strip()
 
     push()
-    entries = [e for e in entries if e["Unit"] or e["Kendala"] or e["Solusi"]]
-    if not entries and text.strip():   # tidak ada label sama sekali
-        entries = [{"Bulan": default_bulan, "Unit": "",
-                    "Kendala": " ".join(text.split()), "Solusi": "", "Pelapor": "",
-                    "Tanggal": "", "Mulai_Jam": ""}]
-    return entries
+    return [e for e in entries if e["Unit"] or e["Kendala"] or e["Solusi"]]
 
 # ── Dekorasi halaman PDF ──────────────────────────────────────
 def make_page_decorator(header_text):
@@ -536,12 +701,12 @@ class PilihanKerja(Flowable):
         if self.lainnya:
             c.setFont("Helvetica", fs); c.drawString(x-0.6*cm, y, self.lainnya[:90])
 
-def build_form_flowables(e, nomor, total):
+def build_form_flowables(e, nomor, total, tanpa_ttd_staf=False, tampil_nomor=True):
     ss = st.session_state
     cfg_ttd = ss.get("ttd_cfg", {}) or {}
     def b64_bytes(key):
         v = cfg_ttd.get(key)
-        return base64.b64decode(v) if v else None
+        return base64.b64decode(v) if (v and not tanpa_ttd_staf) else None
 
     f   = ParagraphStyle("f",  fontName="Helvetica", fontSize=8.5, textColor=C_TEXT, leading=11)
     fb  = ParagraphStyle("fb", parent=f, fontName="Helvetica-Bold")
@@ -645,13 +810,14 @@ def build_form_flowables(e, nomor, total):
     atas.setStyle(TableStyle([("VALIGN", (0,2), (-1,2), "MIDDLE")]))     # ttd di tengah ruangnya
     bawah.setStyle(TableStyle([("VALIGN", (0,3), (-1,3), "MIDDLE")]))
     out += [Spacer(1, 0.35*cm), atas, Spacer(1, 0.1*cm), bawah]
-    out.append(Paragraph(f"<font size=7 color='#7F8C8D'>Lampiran {nomor} dari {total}</font>",
-                         ParagraphStyle("lamp", parent=f, alignment=2)))
+    if tampil_nomor:
+        out.append(Paragraph(f"<font size=7 color='#7F8C8D'>Lampiran {nomor} dari {total}</font>",
+                             ParagraphStyle("lamp", parent=f, alignment=2)))
     return out
 
 # ── PDF Generator ─────────────────────────────────────────────
 def generate_pdf(all_data, pdf_title="Laporan IT Triwulan I", header_text="LAPORAN IT TRIWULAN I", romawi="I",
-                 hanya_form=False):
+                 hanya_form=False, cetak=False, tanpa_ttd_staf=False):
     buf = io.BytesIO()
     nomor_dokumen = f"No: LAP-IT/TW-{romawi}/{datetime.now().year}/RSUD-CLG"
     doc = BaseDocTemplate(buf, pagesize=A4,
@@ -763,7 +929,8 @@ def generate_pdf(all_data, pdf_title="Laporan IT Triwulan I", header_text="LAPOR
         for n, e in enumerate(all_data, 1):
             if n > 1:
                 elements.append(PageBreak())
-            elements += build_form_flowables(e, n, len(all_data))
+            elements += build_form_flowables(e, n, len(all_data), tanpa_ttd_staf=tanpa_ttd_staf,
+                                             tampil_nomor=not cetak)
     elif st.session_state.get("lampiran", True):
         for n, e in enumerate(all_data, 1):
             elements.append(PageBreak())
@@ -1054,7 +1221,7 @@ st.divider()
 if "edit_index" not in st.session_state:
     st.session_state.edit_index = None
 
-tab1, tab2 = st.tabs(["📝 Input Laporan", "🗂️ Lihat, Edit & Hapus Data"])
+tab1, tab2, tab3 = st.tabs(["📝 Input Laporan", "🗂️ Lihat, Edit & Hapus Data", "🖨️ Form Cetak (ttd basah)"])
 
 # ══════════════════════════════════════════════════════════════
 # TAB 1 — CREATE
@@ -1080,6 +1247,8 @@ def _fill_form(entry):
         ss.in_tgl = d
     if entry.get("Mulai_Jam"):
         ss.in_mjam = entry["Mulai_Jam"]
+    if entry.get("Selesai_Jam"):
+        ss.in_sjam = entry["Selesai_Jam"]
     _auto_detail()
 
 def _reset_input_form():
@@ -1096,14 +1265,47 @@ def _reset_input_form():
 
 if st.session_state.pop("_reset_in", False):
     _reset_input_form()
+if st.session_state.pop("_reset_wa", False):
+    st.session_state["wa_text"] = ""
+
+def _unit_hints():
+    """Dari data tersimpan: (daftar ruangan yang pernah dipakai, peta nama pelapor -> ruangan paling sering)."""
+    key = f"_ku_{JSON_NAME}"
+    if key not in st.session_state:
+        try:
+            d_, _ = load_json(service, JSON_NAME)
+        except Exception:
+            d_ = []
+        units = sorted({(e_.get("Unit") or "").strip() for e_ in d_ if e_.get("Unit")})
+        cnt = {}
+        for e_ in d_:
+            pl, un = (e_.get("Pelapor") or "").strip().lower(), (e_.get("Unit") or "").strip()
+            if pl and un:
+                cnt.setdefault(pl, Counter())[un] += 1
+        st.session_state[key] = (units, {pl: c.most_common(1)[0][0] for pl, c in cnt.items()})
+    return st.session_state[key]
+
+def _known_units():
+    return _unit_hints()[0]
 
 with tab1:
     with st.expander("📋 Paste laporan dari WhatsApp"):
-        st.caption("Format yang dikenali: baris berlabel seperti `Unit: ...`, `Kendala: ...`, `Solusi: ...` "
-                   "(atau Lokasi / Masalah / Tindakan). Boleh banyak laporan sekaligus.")
+        st.caption("Bisa tempel **chat WA langsung** (salin pesan apa adanya, termasuk jam & nama pengirim): "
+                   "nama ruangan dibaca dari isi pesan, jam mulai dari jam pesan user, jam selesai dari jam "
+                   "balasan IT. Format berlabel (`Unit:` `Kendala:` `Solusi:`) juga masih bisa.")
+        c_it, c_sc = st.columns(2)
+        with c_it:
+            it_txt = st.text_input("Nama IT di WA (pisahkan koma)", value="Isfan", key="wa_it",
+                                   help="Pesan dari nama ini dianggap balasan IT (solusi + jam selesai).")
+        with c_sc:
+            scope = st.selectbox("Balasan IT berlaku untuk",
+                                 ["Semua laporan yang belum terjawab", "Hanya laporan terakhir"], key="wa_scope")
         wa_text = st.text_area("Tempel teks WA di sini", height=180, key="wa_text")
         if wa_text.strip():
-            parsed = parse_wa_report(wa_text, st.session_state.in_bulan)
+            parsed = parse_wa_report(wa_text, st.session_state.in_bulan, known_units=_known_units(),
+                                     it_names=[x.strip() for x in it_txt.split(",")],
+                                     reply_all=scope.startswith("Semua"),
+                                     pelapor_units=_unit_hints()[1])
             plus = st.selectbox("Jam selesai (perkiraan) untuk entri yang punya jam pesan WA",
                                 ["Kosongkan", "+15 menit", "+30 menit", "+45 menit", "+60 menit"],
                                 key="wa_plus",
@@ -1129,10 +1331,13 @@ with tab1:
                 st.info(f"ℹ️ {len(tanpa_tgl)} entri tidak punya tanggal di teks WA (tidak ada `Tanggal:` / "
                         f"timestamp chat). Tanggalnya dibiarkan kosong, bukan diisi hari ini. "
                         f"Isi lewat tab Edit kalau perlu.")
-            lengkap = all(e["Unit"] and e["Kendala"] and e["Solusi"] for e in parsed)
+            lengkap = all(e["Unit"] and e["Kendala"] for e in parsed)
             if not lengkap:
-                st.warning("⚠️ Ada entri yang belum lengkap (Unit/Kendala/Solusi kosong). "
-                           "Pakai **Isi ke form** lalu lengkapi manual.")
+                st.warning("⚠️ Ada entri yang ruangan/kendalanya kosong. Pakai **Isi ke form** lalu lengkapi manual.")
+            tanpa_solusi = [e for e in parsed if not e["Solusi"]]
+            if tanpa_solusi:
+                st.info(f"ℹ️ {len(tanpa_solusi)} entri belum ada solusi (belum ada balasan IT di teks yang ditempel). "
+                        f"Bisa dilengkapi lewat tab Edit. Cek juga kolom **Nama IT di WA** di atas kalau balasan harusnya kebaca.")
             w1, w2 = st.columns(2)
             with w1:
                 st.button("📝 Isi ke form (entri pertama)", on_click=_fill_form, args=(parsed[0],))
@@ -1142,10 +1347,21 @@ with tab1:
                         try:
                             data, fid = load_json(service, JSON_NAME)
                             parsed = [lengkapi_entry(dict(e_), live=False)[0] for e_ in parsed]
-                            data.extend(parsed)
+                            ada = {(d_.get("Tanggal"), d_.get("Mulai_Jam"), (d_.get("Unit") or "").lower())
+                                   for d_ in data if d_.get("Tanggal") and d_.get("Mulai_Jam")}
+                            baru = [e_ for e_ in parsed
+                                    if (e_.get("Tanggal"), e_.get("Mulai_Jam"), e_["Unit"].lower()) not in ada]
+                            lewat = len(parsed) - len(baru)
+                            data.extend(baru)
                             save_json(service, data, fid)
                             upload_pdf(service, generate_pdf(data, PDF_TITLE, HDR_TEXT, ROMAWI), PDF_NAME)
-                            st.success(f"✅ {len(parsed)} entri ditambahkan. **{PDF_NAME}** diperbarui di Drive.")
+                            st.session_state["_flash"] = (
+                                f"✅ {len(baru)} entri ditambahkan. **{PDF_NAME}** diperbarui di Drive."
+                                + (f"  \nℹ️ {lewat} entri dilewati karena sudah ada (tanggal, jam, dan ruangan sama)."
+                                   if lewat else ""))
+                            st.session_state["_reset_wa"] = True
+                            st.session_state.pop(f"_ku_{JSON_NAME}", None)
+                            st.rerun()
                         except Exception as e:
                             st.error(f"❌ Terjadi kesalahan: {e}")
 
@@ -1374,3 +1590,53 @@ with tab2:
                     st.rerun()
                 except Exception as e:
                     st.error(f"❌ Gagal: {e}")
+
+
+# ══════════════════════════════════════════════════════════════
+# TAB 3 — Form cetak untuk tanda tangan basah
+# ══════════════════════════════════════════════════════════════
+def _cetak_pilih(idxs, val):
+    for i_ in idxs:
+        st.session_state[f"cetak_{i_}"] = val
+
+with tab3:
+    st.markdown("#### 🖨️ Form untuk tanda tangan basah")
+    st.caption("Untuk laporan yang user-nya belum tanda tangan digital (atau kalau diminta dicetak). "
+               "Ttd digital tetap dipakai untuk laporan EKIN; menu ini cuma menyiapkan form kosong-ttd untuk dicetak.")
+    try:
+        data_c, _ = load_json(service, JSON_NAME)
+    except Exception as e_:
+        data_c = []
+        st.error(f"❌ Gagal memuat data: {e_}")
+    if not data_c:
+        st.info("Belum ada data laporan.")
+    else:
+        semua = st.checkbox("Tampilkan juga yang sudah ttd digital", key="cetak_semua")
+        idxs = [i for i, e_ in enumerate(data_c) if semua or not e_.get("TTD_User")]
+        if not idxs:
+            st.success("✅ Semua entri sudah punya ttd user digital.")
+        else:
+            st.write(f"**{len(idxs)}** entri" + ("" if semua else " belum ada ttd user") + ":")
+            b1, b2 = st.columns(2)
+            with b1: st.button("☑️ Pilih semua", on_click=_cetak_pilih, args=(idxs, True), key="cetak_all")
+            with b2: st.button("⬜ Kosongkan pilihan", on_click=_cetak_pilih, args=(idxs, False), key="cetak_none")
+            for i in idxs:
+                e_ = data_c[i]
+                st.checkbox(f"{i+1}. {e_.get('Tanggal') or '— tanggal kosong'} | {e_.get('Unit') or '-'} | "
+                            f"{e_.get('Pelapor') or '-'}  {'✍️ sudah ttd' if e_.get('TTD_User') else '▫️ belum ttd'}",
+                            key=f"cetak_{i}")
+            pilih = [i for i in idxs if st.session_state.get(f"cetak_{i}")]
+            kosong_staf = st.checkbox("Kosongkan juga ttd IT & Kanit (semua ttd basah)", value=True,
+                                      key="cetak_kosong_staf")
+            sig_c = hash((tuple(pilih), kosong_staf, json.dumps([data_c[i] for i in pilih], sort_keys=True, default=str)))
+            if st.button(f"📄 Siapkan {len(pilih)} form untuk dicetak", disabled=not pilih, key="cetak_siap"):
+                with st.spinner("Menyusun form..."):
+                    st.session_state["_cetak_pdf"] = generate_pdf(
+                        [data_c[i] for i in pilih], PDF_TITLE, HDR_TEXT, ROMAWI,
+                        hanya_form=True, cetak=True, tanpa_ttd_staf=kosong_staf).getvalue()
+                    st.session_state["_cetak_hash"] = sig_c
+            if st.session_state.get("_cetak_pdf") and st.session_state.get("_cetak_hash") == sig_c and pilih:
+                st.download_button("📥 Download Form Cetak (PDF)", data=st.session_state["_cetak_pdf"],
+                                   file_name=f"Form_Cetak_{PDF_NAME}", mime="application/pdf", key="cetak_dl")
+            elif st.session_state.get("_cetak_pdf"):
+                st.caption("Pilihan berubah — klik **Siapkan** lagi biar file terbaru.")
