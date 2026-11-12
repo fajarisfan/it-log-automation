@@ -180,6 +180,9 @@ def clean_signature(im, max_w):
     b = np.maximum(np.asarray(bg, dtype=np.float32), 1.0)
     ratio = g / b
     alpha = np.clip((0.78 - ratio) / (0.78 - 0.48), 0.0, 1.0)   # hanya yang jelas gelap = tinta
+    # buka-morfologi 3x3: titik-titik tunggal (pola layar monitor, bintik kertas) hilang, goresan tetap
+    a8 = PILImage.fromarray((alpha * 255).astype(np.uint8)).filter(ImageFilter.MinFilter(3)).filter(ImageFilter.MaxFilter(3))
+    alpha = np.asarray(a8, dtype=np.float32) / 255.0
 
     # --- pilih gugusan tinta utama (grid kasar + flood fill) ---
     cell = 10
@@ -229,7 +232,7 @@ def clean_signature(im, max_w):
         else:
             keep[:] = True
     alpha = alpha * keep
-    alpha[alpha < 0.05] = 0.0
+    alpha[alpha < 0.35] = 0.0                       # buang sisa samar
 
     arr = np.asarray(rgb, dtype=np.float32) * (1.0 - 0.25 * alpha[..., None])
     arr[alpha == 0] = 0.0
@@ -312,6 +315,23 @@ def _jam_ke_menit(j):
 def _menit_ke_jam(mnt):
     mnt %= 1440
     return f"{mnt // 60:02d}.{mnt % 60:02d}"
+
+def bulan_entri(e):
+    """Bulan sebuah entri: dari tanggalnya kalau ada, kalau tidak dari kolom Bulan."""
+    d = parse_tanggal_id(e.get("Tanggal"))
+    return BULAN_ID[d.month - 1] if d else (e.get("Bulan") or "-")
+
+def _urut_key(e):
+    d = parse_tanggal_id(e.get("Tanggal"))
+    if d:
+        return (d.year, d.month, d.day, _jam_ke_menit(e.get("Mulai_Jam")) or 0)
+    b = e.get("Bulan")
+    bln = BULAN_ID.index(b) + 1 if b in BULAN_ID else 13
+    return (datetime.now(WIB).year, bln, 0, 0)           # tanpa tanggal: di awal bulannya
+
+def urutkan(data):
+    """Urutkan entri kronologis (tanggal + jam mulai). Stabil: urutan sama tetap seperti semula."""
+    return sorted(data, key=_urut_key)
 
 # ── Tebak peralatan & jenis pekerjaan dari teks kendala/solusi ──
 _ALAT_RULES = [
@@ -818,6 +838,7 @@ def build_form_flowables(e, nomor, total, tanpa_ttd_staf=False, tampil_nomor=Tru
 # ── PDF Generator ─────────────────────────────────────────────
 def generate_pdf(all_data, pdf_title="Laporan IT Triwulan I", header_text="LAPORAN IT TRIWULAN I", romawi="I",
                  hanya_form=False, cetak=False, tanpa_ttd_staf=False):
+    all_data = urutkan(all_data)
     buf = io.BytesIO()
     nomor_dokumen = f"No: LAP-IT/TW-{romawi}/{datetime.now().year}/RSUD-CLG"
     doc = BaseDocTemplate(buf, pagesize=A4,
@@ -1129,6 +1150,44 @@ def ttd_pad(key):
     st.button("🗑️ Hapus / ulangi ttd", key=f"clr_{key}", on_click=_reset_pad)
     return canvas_to_upload(img) if img is not None else None
 
+def crop_persen(im, kiri, kanan, atas, bawah):
+    """Potong gambar PIL dengan batas dalam persen (0-100)."""
+    w, h = im.size
+    x1, x2 = int(w * kiri / 100), int(w * kanan / 100)
+    y1, y2 = int(h * atas / 100), int(h * bawah / 100)
+    return im.crop((x1, y1, max(x2, x1 + 1), max(y2, y1 + 1)))
+
+def ttd_crop_preview(uploaded, key):
+    """Crop opsional + PREVIEW hasil pembersihan sebelum disimpan. Return objek ber-getvalue() atau None."""
+    if not uploaded:
+        return None
+    from PIL import Image as PILImage, ImageOps
+    try:
+        im = ImageOps.exif_transpose(PILImage.open(io.BytesIO(uploaded.getvalue()))).convert("RGB")
+    except Exception as ex:
+        st.error(f"❌ Gambar tidak bisa dibuka: {ex}")
+        return None
+    with st.expander("✂️ Potong gambar (opsional)"):
+        st.caption("Geser untuk membuang tulisan/benda lain di sekitar ttd.")
+        l, r = st.slider("Kiri – kanan (%)", 0, 100, (0, 100), key=f"{key}_cx")
+        t, b = st.slider("Atas – bawah (%)", 0, 100, (0, 100), key=f"{key}_cy")
+    cropped = crop_persen(im, l, r, t, b)
+    buf = io.BytesIO(); cropped.save(buf, "PNG")
+    obj = _Bytes(buf.getvalue())
+    try:
+        raw = base64.b64decode(img_to_b64(obj))
+        pv = PILImage.open(io.BytesIO(raw)).convert("RGBA")
+        bg = PILImage.new("RGBA", pv.size, (235, 235, 235, 255)); bg.alpha_composite(pv)
+        st.image(bg.convert("RGB"), caption="Preview hasil (latar abu-abu = transparan)", width=200)
+        if pv.height > 1.15 * pv.width:
+            st.warning("⚠️ Hasilnya terlalu tinggi/ramai — kemungkinan ada tulisan atau nama ikut terbawa. "
+                       "Potong lagi, atau pakai gambar ttd polos (ttd saja di kertas putih).")
+        if len(raw) > 120_000:
+            st.warning("⚠️ Gambar terlalu 'ramai' (file besar). Biasanya karena foto layar atau ada banyak teks.")
+    except Exception as ex:
+        st.caption(f"⚠️ Gagal memproses gambar: {ex}")
+    return obj
+
 # ── UI ────────────────────────────────────────────────────────
 st.title("🖥️ Buat push dukung bukti EKIN")
 st.caption("Input laporan kendala IT dan simpan otomatis ke Google Drive")
@@ -1187,12 +1246,14 @@ with st.expander("✍️ TTD Permanen IT & Kanit (upload foto sekali, tersimpan 
         st.caption("TTD IT (Isfan)")
         if cfg_t.get("it_img_b64"):
             st.image(base64.b64decode(cfg_t["it_img_b64"]), width=140)
-        st.file_uploader("Ganti/upload TTD IT", type=["png","jpg","jpeg"], key="ttd_it_up")
+        up_it = st.file_uploader("Ganti/upload TTD IT", type=["png","jpg","jpeg"], key="ttd_it_up")
+        ready_it = ttd_crop_preview(up_it, "ttd_it")
     with p2:
         st.caption("TTD Kanit / Pengawas")
         if cfg_t.get("kanit_img_b64"):
             st.image(base64.b64decode(cfg_t["kanit_img_b64"]), width=140)
-        st.file_uploader("Ganti/upload TTD Kanit", type=["png","jpg","jpeg"], key="ttd_kanit_up")
+        up_kn = st.file_uploader("Ganti/upload TTD Kanit", type=["png","jpg","jpeg"], key="ttd_kanit_up")
+        ready_kn = ttd_crop_preview(up_kn, "ttd_kanit")
         st.text_input("Nama Kanit / Pengawas (Petugas Unit SIMRS)", key="ttd_pengawas_nama")
 
     if st.button("💾 Simpan Permanen ke Drive"):
@@ -1201,10 +1262,10 @@ with st.expander("✍️ TTD Permanen IT & Kanit (upload foto sekali, tersimpan 
         else:
             try:
                 new_cfg = dict(cfg_t)
-                if st.session_state.get("ttd_it_up"):
-                    new_cfg["it_img_b64"] = img_to_b64(st.session_state.ttd_it_up)
-                if st.session_state.get("ttd_kanit_up"):
-                    new_cfg["kanit_img_b64"] = img_to_b64(st.session_state.ttd_kanit_up)
+                if ready_it:
+                    new_cfg["it_img_b64"] = img_to_b64(ready_it)
+                if ready_kn:
+                    new_cfg["kanit_img_b64"] = img_to_b64(ready_kn)
                 new_cfg["kanit_nama"] = st.session_state.get("ttd_pengawas_nama", "")
                 save_json(service, new_cfg, st.session_state.ttd_fid)
                 st.session_state.ttd_cfg = new_cfg
@@ -1352,7 +1413,7 @@ with tab1:
                             baru = [e_ for e_ in parsed
                                     if (e_.get("Tanggal"), e_.get("Mulai_Jam"), e_["Unit"].lower()) not in ada]
                             lewat = len(parsed) - len(baru)
-                            data.extend(baru)
+                            data = urutkan(data + baru)
                             save_json(service, data, fid)
                             upload_pdf(service, generate_pdf(data, PDF_TITLE, HDR_TEXT, ROMAWI), PDF_NAME)
                             st.session_state["_flash"] = (
@@ -1398,7 +1459,7 @@ with tab1:
             entri, warn = _entri_baru()
             for w_ in warn: st.warning("⚠️ " + w_)
             st.info(f"👁️ Preview {len(data)+1} entri (belum tersimpan ke Drive)")
-            show_pdf_preview(generate_pdf(data + [entri], PDF_TITLE, HDR_TEXT, ROMAWI))
+            show_pdf_preview(generate_pdf(urutkan(data + [entri]), PDF_TITLE, HDR_TEXT, ROMAWI))
 
     if submit_btn:
         if not unit or not kendala or not solusi:
@@ -1408,7 +1469,7 @@ with tab1:
                 try:
                     data, fid = load_json(service, JSON_NAME)
                     entri, warn = _entri_baru()
-                    data.append(entri)
+                    data = urutkan(data + [entri])
                     save_json(service, data, fid)
                     upload_pdf(service, generate_pdf(data, PDF_TITLE, HDR_TEXT, ROMAWI), PDF_NAME)
                     ket = (f"{entri['Tanggal']} | jam {entri.get('Mulai_Jam') or '-'}–{entry_jam(entri)} | "
@@ -1427,6 +1488,7 @@ with tab1:
 with tab2:
     st.subheader("📋 Data Laporan Tersimpan")
     data, fid = load_json(service, JSON_NAME)
+    data = urutkan(data)
 
     if not data:
         st.info("Belum ada data tersimpan.")
@@ -1462,7 +1524,19 @@ with tab2:
 
         BULAN_OPTIONS = BULAN_TRIWULAN
 
+        opsi_filter = ["Semua"] + BULAN_TRIWULAN
+        if st.session_state.get("filter_bulan") not in opsi_filter:
+            st.session_state["filter_bulan"] = "Semua"
+        filter_b = st.selectbox("Filter bulan", opsi_filter, key="filter_bulan")
+        bulan_sebelumnya = None
+
         for i, entry in enumerate(data):
+            bln_e = bulan_entri(entry)
+            if filter_b != "Semua" and bln_e != filter_b:
+                continue
+            if filter_b == "Semua" and bln_e != bulan_sebelumnya and st.session_state.edit_index != i:
+                st.markdown(f"##### 📆 {bln_e}")
+                bulan_sebelumnya = bln_e
             # ── Mode EDIT aktif untuk baris ini ──────────────
             if st.session_state.edit_index == i:
                 with st.container(border=True):
@@ -1512,6 +1586,7 @@ with tab2:
                                         **e_detail,
                                     }, live=False)
                                     for w_ in _w: st.warning("⚠️ " + w_)
+                                    data = urutkan(data)
                                     save_json(service, data, fid)
                                     upload_pdf(service, generate_pdf(data, PDF_TITLE, HDR_TEXT, ROMAWI), PDF_NAME)
                                     st.success("✅ Entri berhasil diperbarui!")
@@ -1583,7 +1658,7 @@ with tab2:
             with st.spinner("Menggabungkan data..."):
                 try:
                     existing, fid_ex = load_json(service, JSON_NAME)
-                    merged = data_awal + existing
+                    merged = urutkan(data_awal + existing)
                     save_json(service, merged, fid_ex)
                     upload_pdf(service, generate_pdf(merged, PDF_TITLE, HDR_TEXT, ROMAWI), PDF_NAME)
                     st.success(f"✅ Berhasil! Total sekarang {len(merged)} entri. Data lama tetap aman.")
@@ -1605,6 +1680,7 @@ with tab3:
                "Ttd digital tetap dipakai untuk laporan EKIN; menu ini cuma menyiapkan form kosong-ttd untuk dicetak.")
     try:
         data_c, _ = load_json(service, JSON_NAME)
+        data_c = urutkan(data_c)
     except Exception as e_:
         data_c = []
         st.error(f"❌ Gagal memuat data: {e_}")
@@ -1612,7 +1688,12 @@ with tab3:
         st.info("Belum ada data laporan.")
     else:
         semua = st.checkbox("Tampilkan juga yang sudah ttd digital", key="cetak_semua")
-        idxs = [i for i, e_ in enumerate(data_c) if semua or not e_.get("TTD_User")]
+        opsi_c = ["Semua"] + BULAN_TRIWULAN
+        if st.session_state.get("cetak_bulan") not in opsi_c:
+            st.session_state["cetak_bulan"] = "Semua"
+        fb_c = st.selectbox("Filter bulan", opsi_c, key="cetak_bulan")
+        idxs = [i for i, e_ in enumerate(data_c)
+                if (semua or not e_.get("TTD_User")) and (fb_c == "Semua" or bulan_entri(e_) == fb_c)]
         if not idxs:
             st.success("✅ Semua entri sudah punya ttd user digital.")
         else:
