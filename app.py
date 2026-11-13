@@ -148,22 +148,31 @@ def load_ttd(service):
     raw = fh.getvalue().decode("utf-8").strip()
     return (json.loads(raw) if raw else {}), fid
 
-def clean_signature(im, max_w):
+def _fit_sig(im, max_w, max_side=None):
+    """Kecilkan gambar ttd: lebar <= max_w dan sisi terpanjang <= max_side (tampil di form cuma ±1,5 cm)."""
+    from PIL import Image as PILImage
+    sc = 1.0
+    if im.width > max_w:
+        sc = min(sc, max_w / im.width)
+    if max_side and max(im.size) > max_side:
+        sc = min(sc, max_side / max(im.size))
+    if sc < 1.0:
+        im = im.resize((max(1, int(im.width * sc)), max(1, int(im.height * sc))), PILImage.LANCZOS)
+    return im
+
+def clean_signature(im, max_w, max_side=None):
     """Foto/scan ttd -> hanya tinta (latar transparan), dicrop rapat ke GUGUSAN TINTA UTAMA.
     Bintik, noda kertas, dan benda di tepi foto (meja/keranjang) dibuang."""
     from PIL import Image as PILImage, ImageFilter, ImageOps
     im = ImageOps.exif_transpose(im).convert("RGBA")
     if im.getchannel("A").getextrema()[0] < 255:          # sudah transparan (PNG) -> biarkan
-        if im.width > max_w:
-            im = im.resize((max_w, max(1, int(im.height * max_w / im.width))))
-        return im
+        return _fit_sig(im, max_w, max_side)
     try:
         import numpy as np
     except ImportError:
-        if im.width > max_w:
-            im = im.resize((max_w, max(1, int(im.height * max_w / im.width))))
-        return im
+        return _fit_sig(im, max_w, max_side)
 
+    foto_besar = im.width >= 700          # foto/scan besar; gambar kecil (kanvas jari) diproses lebih lembut
     # kerja di resolusi menengah supaya detail ttd kecil tidak hilang
     work_w = 1000
     if im.width > work_w:
@@ -181,8 +190,9 @@ def clean_signature(im, max_w):
     ratio = g / b
     alpha = np.clip((0.78 - ratio) / (0.78 - 0.48), 0.0, 1.0)   # hanya yang jelas gelap = tinta
     # buka-morfologi 3x3: titik-titik tunggal (pola layar monitor, bintik kertas) hilang, goresan tetap
-    a8 = PILImage.fromarray((alpha * 255).astype(np.uint8)).filter(ImageFilter.MinFilter(3)).filter(ImageFilter.MaxFilter(3))
-    alpha = np.asarray(a8, dtype=np.float32) / 255.0
+    if foto_besar:
+        a8 = PILImage.fromarray((alpha * 255).astype(np.uint8)).filter(ImageFilter.MinFilter(3)).filter(ImageFilter.MaxFilter(3))
+        alpha = np.asarray(a8, dtype=np.float32) / 255.0
 
     # --- pilih gugusan tinta utama (grid kasar + flood fill) ---
     cell = 10
@@ -232,7 +242,7 @@ def clean_signature(im, max_w):
         else:
             keep[:] = True
     alpha = alpha * keep
-    alpha[alpha < 0.35] = 0.0                       # buang sisa samar
+    alpha[alpha < (0.35 if foto_besar else 0.1)] = 0.0   # buang sisa samar
 
     arr = np.asarray(rgb, dtype=np.float32) * (1.0 - 0.25 * alpha[..., None])
     arr[alpha == 0] = 0.0
@@ -242,14 +252,12 @@ def clean_signature(im, max_w):
         pad = 6
         out = out.crop((max(0, box[0]-pad), max(0, box[1]-pad),
                         min(out.width, box[2]+pad), min(out.height, box[3]+pad)))
-    if out.width > max_w:
-        out = out.resize((max_w, max(1, int(out.height * max_w / out.width))), PILImage.LANCZOS)
-    return out
+    return _fit_sig(out, max_w, max_side)
 
-def img_to_b64(uploaded, max_w=700):
+def img_to_b64(uploaded, max_w=700, max_side=480):
     """TTD permanen: bersihkan latar, simpan sebagai PNG transparan (base64)."""
     from PIL import Image as PILImage
-    im = clean_signature(PILImage.open(io.BytesIO(uploaded.getvalue())), max_w)
+    im = clean_signature(PILImage.open(io.BytesIO(uploaded.getvalue())), max_w, max_side)
     out = io.BytesIO()
     im.save(out, "PNG", optimize=True)
     return base64.b64encode(out.getvalue()).decode("utf-8")
@@ -668,10 +676,10 @@ def rl_sig(raw, max_w, max_h):
     except Exception:
         return None
 
-def ttd_user_to_b64(uploaded, max_w=500):
+def ttd_user_to_b64(uploaded, max_w=500, max_side=400):
     """TTD user per tiket: bersihkan latar kertas → PNG transparan (base64)."""
     from PIL import Image as PILImage
-    im = clean_signature(PILImage.open(io.BytesIO(uploaded.getvalue())), max_w)
+    im = clean_signature(PILImage.open(io.BytesIO(uploaded.getvalue())), max_w, max_side)
     out = io.BytesIO()
     im.save(out, "PNG", optimize=True)
     return base64.b64encode(out.getvalue()).decode("utf-8")
@@ -803,7 +811,7 @@ def build_form_flowables(e, nomor, total, tanpa_ttd_staf=False, tampil_nomor=Tru
 
     # ── tanda tangan: Pengawas (Kanit) | Teknisi (IT) ; di bawahnya User penerima ──
     def dots(v, n=34): return v.strip() if v and v.strip() else "." * n
-    def sig(raw): return rl_sig(raw, 3.6*cm, 1.35*cm) or ""
+    def sig(raw): return rl_sig(raw, 3.6*cm, 1.5*cm) or ""
     def nama_cell(nama, extra=""):
         t = f"( {xml_escape(nama)} )"
         if extra: t += f"<br/><font size=7>{xml_escape(extra)}</font>"
@@ -1135,7 +1143,7 @@ def ttd_pad(key):
                    "lalu redeploy. Sementara pakai upload/foto di bawah.")
         return None
     n = st.session_state.get("pad_n", 0)
-    kw = dict(stroke_width=3, stroke_color="#000000", background_color="#FFFFFF",
+    kw = dict(stroke_width=4, stroke_color="#000000", background_color="#FFFFFF",
               height=170, width=320, drawing_mode="freedraw", update_streamlit=True,
               key=f"{key}_{n}")
     try:
@@ -1149,6 +1157,34 @@ def ttd_pad(key):
         return None
     st.button("🗑️ Hapus / ulangi ttd", key=f"clr_{key}", on_click=_reset_pad)
     return canvas_to_upload(img) if img is not None else None
+
+def jumlah_gumpalan(img, sisi=200, min_piksel=6):
+    """Jumlah gumpalan tinta terpisah pada gambar RGBA. Teks banyak (tiap huruf), ttd hanya beberapa."""
+    import numpy as np
+    from PIL import Image as PILImage
+    a = img.convert("RGBA").getchannel("A")
+    sc = sisi / max(a.size)
+    if sc < 1.0:
+        a = a.resize((max(1, int(a.width * sc)), max(1, int(a.height * sc))), PILImage.BOX)
+    g = np.asarray(a) > 30
+    gh, gw = g.shape
+    seen = np.zeros_like(g, dtype=bool)
+    n = 0
+    for sy in range(gh):
+        for sx in range(gw):
+            if g[sy, sx] and not seen[sy, sx]:
+                stack, cells = [(sy, sx)], 0
+                seen[sy, sx] = True
+                while stack:
+                    y, x = stack.pop(); cells += 1
+                    for dy in (-1, 0, 1):
+                        for dx in (-1, 0, 1):
+                            ny, nx = y + dy, x + dx
+                            if 0 <= ny < gh and 0 <= nx < gw and g[ny, nx] and not seen[ny, nx]:
+                                seen[ny, nx] = True; stack.append((ny, nx))
+                if cells >= min_piksel:
+                    n += 1
+    return n
 
 def crop_persen(im, kiri, kanan, atas, bawah):
     """Potong gambar PIL dengan batas dalam persen (0-100)."""
@@ -1179,11 +1215,14 @@ def ttd_crop_preview(uploaded, key):
         pv = PILImage.open(io.BytesIO(raw)).convert("RGBA")
         bg = PILImage.new("RGBA", pv.size, (235, 235, 235, 255)); bg.alpha_composite(pv)
         st.image(bg.convert("RGB"), caption="Preview hasil (latar abu-abu = transparan)", width=200)
-        if pv.height > 1.15 * pv.width:
-            st.warning("⚠️ Hasilnya terlalu tinggi/ramai — kemungkinan ada tulisan atau nama ikut terbawa. "
-                       "Potong lagi, atau pakai gambar ttd polos (ttd saja di kertas putih).")
-        if len(raw) > 120_000:
-            st.warning("⚠️ Gambar terlalu 'ramai' (file besar). Biasanya karena foto layar atau ada banyak teks.")
+        n_g = jumlah_gumpalan(pv)
+        if n_g >= 6:
+            st.warning(f"⚠️ Terbaca {n_g} gumpalan terpisah — kemungkinan ada tulisan/nama ikut terbawa "
+                       f"(ttd polos biasanya 1–3 gumpalan). Potong lagi, atau pakai gambar ttd saja.")
+        else:
+            st.caption("✅ Terbaca sebagai ttd polos.")
+        if len(raw) > 250_000:
+            st.warning("⚠️ File hasilnya besar. Biasanya karena foto layar monitor atau gambar yang sangat ramai.")
     except Exception as ex:
         st.caption(f"⚠️ Gagal memproses gambar: {ex}")
     return obj
