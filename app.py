@@ -932,26 +932,36 @@ def generate_pdf(all_data, pdf_title="Laporan IT Triwulan I", header_text="LAPOR
         *row_bg,
     ]))
 
-    bulan_list = list(dict.fromkeys(e.get("Bulan","") for e in all_data))
-    elements += [tbl, Spacer(1, 0.5*cm),
-                 HRFlowable(width="100%", thickness=1, color=C_SUBHEAD, spaceAfter=6),
-                 Paragraph(f"Total entri: <b>{len(all_data)}</b> &nbsp;|&nbsp; "
-                            f"Bulan tercatat: <b>{', '.join(bulan_list)}</b>", s_info)]
+    bulan_list = list(dict.fromkeys(bulan_entri(e) for e in all_data))
+    blok_ringkasan = [Spacer(1, 0.5*cm),
+                      HRFlowable(width="100%", thickness=1, color=C_SUBHEAD, spaceAfter=6),
+                      Paragraph(f"Total entri: <b>{len(all_data)}</b> &nbsp;|&nbsp; "
+                                f"Bulan tercatat: <b>{', '.join(bulan_list)}</b>", s_info)]
 
     if all_data:
         unit_counts = Counter(e.get("Unit", "-") for e in all_data)
         unit_teratas, jumlah_teratas = unit_counts.most_common(1)[0]
-        unit_ringkasan = "; ".join(f"{xml_escape(u)} ({c})" for u, c in unit_counts.most_common())
+        urut_unit = unit_counts.most_common()
+        if all(c == 1 for _, c in urut_unit):
+            rincian = f"{len(urut_unit)} unit/lokasi berbeda, masing-masing 1 kali"
+        else:
+            tampil = "; ".join(f"{xml_escape(u)} ({c})" for u, c in urut_unit[:5])
+            sisa = len(urut_unit) - 5
+            rincian = tampil + (f"; dan {sisa} unit lainnya" if sisa > 0 else "")
         ringkasan_text = (
             f"Selama periode ini tercatat <b>{len(all_data)} kendala/pekerjaan</b> yang ditangani. "
-            f"Unit/lokasi dengan jumlah penanganan terbanyak adalah <b>{xml_escape(unit_teratas)}</b> "
-            f"sebanyak {jumlah_teratas} kali. Rincian per unit: {unit_ringkasan}. "
+            + ("" if all(c == 1 for _, c in urut_unit) else
+               f"Unit/lokasi dengan jumlah penanganan terbanyak adalah <b>{xml_escape(unit_teratas)}</b> "
+               f"sebanyak {jumlah_teratas} kali. ")
+            + f"Rincian per unit: {rincian}. "
             f"Seluruh kendala pada periode ini telah ditindaklanjuti hingga selesai."
         )
-        elements += [
+        blok_ringkasan += [
             Paragraph("Ringkasan Periode", s_ringkasan_title),
             Paragraph(ringkasan_text, s_ringkasan),
         ]
+    # tabel dulu, lalu ringkasan satu blok utuh (tidak pernah kepotong ke halaman berikutnya)
+    elements += [tbl, KeepTogether(blok_ringkasan)]
 
     if hanya_form:                       # rekap form saja (tanpa tabel ringkasan)
         elements = []
@@ -1199,7 +1209,10 @@ def ttd_crop_preview(uploaded, key):
         return None
     from PIL import Image as PILImage, ImageOps
     try:
-        im = ImageOps.exif_transpose(PILImage.open(io.BytesIO(uploaded.getvalue()))).convert("RGB")
+        im0 = ImageOps.exif_transpose(PILImage.open(io.BytesIO(uploaded.getvalue())))
+        punya_alpha = im0.mode in ("RGBA", "LA", "PA") or (im0.mode == "P" and "transparency" in im0.info)
+        # PNG transparan WAJIB tetap RGBA: kalau dipaksa RGB, area transparan jadi hitam (kotak hitam di form)
+        im = im0.convert("RGBA" if punya_alpha else "RGB")
     except Exception as ex:
         st.error(f"❌ Gambar tidak bisa dibuka: {ex}")
         return None
