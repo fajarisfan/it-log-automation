@@ -3,6 +3,9 @@ import json
 import io
 import base64
 import re
+import hmac
+import secrets as _secrets
+from urllib.parse import quote
 from xml.sax.saxutils import escape as _xml_escape
 from datetime import datetime, timedelta, timezone, date
 
@@ -676,6 +679,50 @@ def rl_sig(raw, max_w, max_h):
     except Exception:
         return None
 
+def rl_sig_norm(raw, diag, max_w, max_h):
+    """Ttd dengan ukuran VISUAL seragam: diagonal kotak tinta dibuat sama (diag), lalu dibatasi max_w x max_h.
+    Ttd yang melebar dan ttd yang tinggi-sempit jadi terlihat sama besar."""
+    if not raw:
+        return None
+    try:
+        iw, ih = ImageReader(io.BytesIO(raw)).getSize()
+        sc = diag / ((iw ** 2 + ih ** 2) ** 0.5)
+        w, h = iw * sc, ih * sc
+        if w > max_w or h > max_h:
+            k = min(max_w / w, max_h / h)
+            w, h = w * k, h * k
+        return RLImage(io.BytesIO(raw), width=w, height=h, mask="auto")
+    except Exception:
+        return None
+
+MODE_UKURAN_TTD = {
+    "tinggi":   "Samakan tinggi (lebar menyesuaikan bentuk ttd)",
+    "luas":     "Samakan luas (ttd lebar dan ttd tinggi terasa seimbang)",
+    "diagonal": "Samakan diagonal (kompromi tinggi & luas)",
+    "kotak":    "Muat di satu kotak (ukuran asli ttd, cara paling sederhana)",
+}
+
+def rl_sig_mode(raw, mode="diagonal"):
+    """Ttd dengan proporsi asli (tidak digepengkan), ukuran diseragamkan menurut mode."""
+    if not raw:
+        return None
+    try:
+        iw, ih = ImageReader(io.BytesIO(raw)).getSize()
+        max_w, max_h = 3.8 * cm, 2.0 * cm
+        if mode == "tinggi":
+            h = 1.7 * cm; w = iw * h / ih
+        elif mode == "luas":
+            sc = ((1.9 * cm) ** 2 / (iw * ih)) ** 0.5; w, h = iw * sc, ih * sc
+        elif mode == "kotak":
+            sc = min(3.6 * cm / iw, 1.5 * cm / ih); w, h = iw * sc, ih * sc
+        else:
+            sc = 2.7 * cm / ((iw ** 2 + ih ** 2) ** 0.5); w, h = iw * sc, ih * sc
+        if w > max_w or h > max_h:
+            k = min(max_w / w, max_h / h); w, h = w * k, h * k
+        return RLImage(io.BytesIO(raw), width=w, height=h, mask="auto")
+    except Exception:
+        return None
+
 def ttd_user_to_b64(uploaded, max_w=500, max_side=400):
     """TTD user per tiket: bersihkan latar kertas → PNG transparan (base64)."""
     from PIL import Image as PILImage
@@ -811,7 +858,8 @@ def build_form_flowables(e, nomor, total, tanpa_ttd_staf=False, tampil_nomor=Tru
 
     # ── tanda tangan: Pengawas (Kanit) | Teknisi (IT) ; di bawahnya User penerima ──
     def dots(v, n=34): return v.strip() if v and v.strip() else "." * n
-    def sig(raw): return rl_sig(raw, 3.6*cm, 1.5*cm) or ""
+    mode_ttd = ss.get("ttd_mode_ukuran") or cfg_ttd.get("mode_ukuran") or "luas"
+    def sig(raw): return rl_sig_mode(raw, mode_ttd) or ""
     def nama_cell(nama, extra=""):
         t = f"( {xml_escape(nama)} )"
         if extra: t += f"<br/><font size=7>{xml_escape(extra)}</font>"
@@ -823,14 +871,14 @@ def build_form_flowables(e, nomor, total, tanpa_ttd_staf=False, tampil_nomor=Tru
          [sig(b64_bytes("kanit_img_b64")), sig(b64_bytes("it_img_b64"))],
          [nama_cell(dots(ss.get("ttd_pengawas_nama", ""))),
           nama_cell("Isfan Fajar Anugrah")]],
-        colWidths=[8.8*cm, 8.8*cm], rowHeights=[0.42*cm, 0.42*cm, 1.75*cm, None])
+        colWidths=[8.8*cm, 8.8*cm], rowHeights=[0.42*cm, 0.42*cm, 2.15*cm, None])
     bawah = Table(
         [[Paragraph(f"Cilegon, {xml_escape(dots(tanggal_ttd, 24))}", fc)],
          [Paragraph("Petugas Yang Menerima", fcb)],
          [Paragraph("Hasil Service / User", fc)],
          [sig(base64.b64decode(e["TTD_User"]) if e.get("TTD_User") else None)],
          [nama_cell(dots(e.get("Pelapor","")))]],
-        colWidths=[17.6*cm], rowHeights=[0.5*cm, 0.42*cm, 0.42*cm, 1.75*cm, None])
+        colWidths=[17.6*cm], rowHeights=[0.5*cm, 0.42*cm, 0.42*cm, 2.15*cm, None])
     for t_ in (atas, bawah):
         t_.setStyle(TableStyle([("ALIGN",(0,0),(-1,-1),"CENTER"),   # gambar ttd di tengah kolom, sejajar nama
                                 ("VALIGN",(0,0),(-1,-1),"TOP"),("TOPPADDING",(0,0),(-1,-1),0),
@@ -1240,7 +1288,207 @@ def ttd_crop_preview(uploaded, key):
         st.caption(f"⚠️ Gagal memproses gambar: {ex}")
     return obj
 
+# ── Kotak masuk ttd dari link khusus (Google Apps Script) ──
+INBOX_PREFIX = "ttd_masuk_"
+
+def daftar_ttd_masuk(service):
+    """[(file_id, nama_file)] file kotak masuk ttd di folder Drive."""
+    q = f"'{FOLDER_ID}' in parents and name contains '{INBOX_PREFIX}' and trashed=false"
+    res = service.files().list(q=q, fields="files(id,name)", pageSize=100).execute()
+    return [(f["id"], f["name"]) for f in res.get("files", []) if f["name"].startswith(INBOX_PREFIX)]
+
+def baca_ttd_masuk(service, fid):
+    req = service.files().get_media(fileId=fid)
+    fh = io.BytesIO()
+    dl = MediaIoBaseDownload(fh, req)
+    done = False
+    while not done:
+        _, done = dl.next_chunk()
+    return json.loads(fh.getvalue().decode("utf-8"))
+
+def tandai_ttd_selesai(service, fid, nama, awalan="ttd_selesai_"):
+    """Ganti nama file supaya tidak diproses ulang (tanpa perlu hak hapus)."""
+    service.files().update(fileId=fid, body={"name": awalan + nama[len(INBOX_PREFIX):]}).execute()
+
+def _waktu_indo(txt):
+    try:
+        d_ = datetime.strptime(str(txt), "%Y-%m-%d %H:%M")
+        return f"{d_.day} {BULAN_ID[d_.month-1]} {d_.year} {d_.hour:02d}.{d_.minute:02d}"
+    except Exception:
+        return f"{tanggal_hari_ini()} {jam_sekarang()}"
+
+def proses_ttd_masuk(service):
+    """Tarik ttd yang masuk lewat link khusus ke laporan. Return (berhasil, yatim, daftar_galat)."""
+    keys = list(TRIWULAN_CONFIG.keys())
+    ok = yatim = 0
+    galat, berubah = [], {}
+    for fid, nama in daftar_ttd_masuk(service):
+        try:
+            rec = baca_ttd_masuk(service, fid)
+            token, tw = str(rec["token"]), int(rec["tw"])
+            png = base64.b64decode(rec["png_b64"], validate=True)
+            if not (1 <= tw <= len(keys)) or not (100 < len(png) <= 400000):
+                raise ValueError("rekaman tidak valid")
+            cfgt = TRIWULAN_CONFIG[keys[tw - 1]]
+            if not get_file_id(service, cfgt["json_name"]):
+                raise ValueError(f"{cfgt['json_name']} tidak ada")
+            data, jfid = load_json(service, cfgt["json_name"])
+            idx = next((i for i, e_ in enumerate(data) if e_.get("TTD_Token") == token), None)
+            if idx is None:                       # entri sudah dihapus / token sudah diganti
+                tandai_ttd_selesai(service, fid, nama, "ttd_yatim_")
+                yatim += 1
+                continue
+            e = data[idx]
+            e["TTD_User"] = ttd_user_to_b64(_Bytes(png))
+            nm = str(rec.get("nama", "")).strip()[:80]
+            if nm:
+                e["Pelapor"] = nm
+            e["TTD_Waktu"] = _waktu_indo(rec.get("waktu"))
+            e.pop("TTD_Token", None)
+            e.pop("TTD_Token_Exp", None)
+            data = urutkan(data)
+            save_json(service, data, jfid)        # file kotak masuk baru ditandai SETELAH laporan tersimpan
+            tandai_ttd_selesai(service, fid, nama)
+            ok += 1
+            berubah[tw] = data
+        except Exception as ex:
+            galat.append(f"{nama}: {ex}")
+    for tw, data in berubah.items():              # PDF diperbarui sekali per triwulan
+        cfgt = TRIWULAN_CONFIG[keys[tw - 1]]
+        try:
+            if get_file_id(service, cfgt["pdf_name"]):
+                upload_pdf(service, generate_pdf(data, cfgt["pdf_title"], cfgt["header"], cfgt["romawi"]),
+                           cfgt["pdf_name"])
+        except Exception as ex:
+            galat.append(f"PDF {cfgt['pdf_name']}: {ex}")
+    return ok, yatim, galat
+
+def _ttd_url():
+    """URL web app Apps Script (link ttd khusus)."""
+    try:
+        u = st.secrets["TTD_URL"]
+    except Exception:
+        u = ""
+    return str(u or (st.session_state.get("ttd_cfg") or {}).get("ttd_url") or "").strip()
+
+def url_apps_script_valid(u):
+    return u.startswith("https://script.google.com/") and "/macros/s/" in u and u.endswith("/exec")
+
+# ── Link tanda tangan untuk user (tanpa login, sekali pakai) ──
+TOKEN_HARI = 7
+
+def _token_aktif(e, token=None):
+    """Token ada, cocok (kalau diberikan), dan belum kedaluwarsa."""
+    tk = e.get("TTD_Token")
+    if not tk or (token is not None and tk != token):
+        return False
+    try:
+        exp = datetime.strptime(e.get("TTD_Token_Exp", ""), "%Y-%m-%d %H:%M").replace(tzinfo=WIB)
+    except Exception:
+        return False
+    return datetime.now(WIB) <= exp
+
+def _buat_token(e):
+    e["TTD_Token"] = _secrets.token_urlsafe(16)
+    e["TTD_Token_Exp"] = (datetime.now(WIB) + timedelta(days=TOKEN_HARI)).strftime("%Y-%m-%d %H:%M")
+    return e["TTD_Token"]
+
+def _app_url():
+    try:
+        u = st.secrets["APP_URL"]
+    except Exception:
+        u = ""
+    return str(u or (st.session_state.get("ttd_cfg") or {}).get("app_url") or "").strip().rstrip("/")
+
+def _admin_pin():
+    try:
+        return str(st.secrets["ADMIN_PIN"])
+    except Exception:
+        return ""
+
+def halaman_ttd(service, token, tw):
+    """Halaman publik: user melihat ringkasan servis, menandatangani di layar, ttd tersimpan ke data."""
+    st.title("✍️ Konfirmasi Penerimaan Servis IT")
+    st.caption("RSUD Kota Cilegon · Divisi IT")
+    if st.session_state.get("_ttd_selesai"):
+        st.success("✅ Terima kasih, tanda tangan Anda sudah tersimpan. Halaman ini boleh ditutup.")
+        return
+    keys = list(TRIWULAN_CONFIG.keys())
+    try:
+        cfgt = TRIWULAN_CONFIG[keys[int(tw) - 1]]
+    except Exception:
+        st.error("Link tidak valid.")
+        return
+    try:
+        data, fid = load_json(service, cfgt["json_name"])
+    except Exception:
+        st.error("Data tidak dapat dimuat saat ini. Coba lagi sebentar lagi.")
+        return
+    cari = lambda d_: next((i for i, e_ in enumerate(d_) if _token_aktif(e_, token)), None)
+    idx = cari(data)
+    if idx is None:
+        st.error("Link ini tidak valid, sudah dipakai, atau sudah kedaluwarsa. Silakan hubungi petugas IT.")
+        return
+    e = data[idx]
+    st.markdown(f"**Tanggal:** {e.get('Tanggal') or '-'}  \n**Ruangan:** {e.get('Unit') or '-'}  \n"
+                f"**Kendala:** {e.get('Kendala') or '-'}  \n**Tindakan:** {e.get('Solusi') or '-'}")
+    nama = st.text_input("Nama penerima", value=e.get("Pelapor", ""), key="pub_nama")
+    st.markdown("**Tanda tangan** — coret di kotak berikut dengan jari")
+    pad = ttd_pad("pad_publik")
+    setuju = st.checkbox("Saya menyatakan pekerjaan di atas telah dikerjakan dan hasilnya saya terima.", key="pub_setuju")
+    if st.button("✅ Kirim tanda tangan", type="primary", key="pub_kirim"):
+        if not nama.strip():
+            st.warning("⚠️ Isi nama penerima dulu.")
+        elif not pad:
+            st.warning("⚠️ Coret tanda tangan dulu di kotak.")
+        elif not setuju:
+            st.warning("⚠️ Centang pernyataan dulu.")
+        else:
+            with st.spinner("Menyimpan..."):
+                try:
+                    data, fid = load_json(service, cfgt["json_name"])       # muat ulang (hindari menimpa perubahan lain)
+                    idx = cari(data)
+                    if idx is None:
+                        st.error("Link ini sudah dipakai atau kedaluwarsa.")
+                        return
+                    data[idx]["TTD_User"] = ttd_user_to_b64(pad)
+                    data[idx]["Pelapor"] = nama.strip()
+                    data[idx]["TTD_Waktu"] = f"{tanggal_hari_ini()} {jam_sekarang()}"
+                    data[idx].pop("TTD_Token", None)
+                    data[idx].pop("TTD_Token_Exp", None)
+                    save_json(service, data, fid)
+                except Exception:
+                    st.error("Gagal menyimpan. Coba kirim sekali lagi.")
+                    return
+                try:                                                         # PDF diperbarui bila bisa
+                    cfg_t, _ = load_ttd(service)
+                    st.session_state["ttd_cfg"] = cfg_t
+                    st.session_state["ttd_pengawas_nama"] = cfg_t.get("kanit_nama", "")
+                    st.session_state["ttd_mode_ukuran"] = cfg_t.get("mode_ukuran", "luas")
+                    upload_pdf(service, generate_pdf(data, cfgt["pdf_title"], cfgt["header"], cfgt["romawi"]),
+                               cfgt["pdf_name"])
+                except Exception:
+                    pass
+            st.session_state["_ttd_selesai"] = True
+            st.rerun()
+
 # ── UI ────────────────────────────────────────────────────────
+_qp = st.query_params
+if "ttd" in _qp:                                   # mode publik: HANYA halaman tanda tangan, tanpa menu admin
+    halaman_ttd(get_drive_service(), _qp.get("ttd"), _qp.get("tw"))
+    st.stop()
+
+_pin = _admin_pin()                                # gerbang admin (aktif kalau ADMIN_PIN diisi di secrets)
+if _pin and not st.session_state.get("_admin_ok"):
+    st.title("🔒 Masuk")
+    _masuk = st.text_input("PIN admin", type="password")
+    if _masuk and hmac.compare_digest(_masuk, _pin):
+        st.session_state["_admin_ok"] = True
+        st.rerun()
+    elif _masuk:
+        st.error("PIN salah.")
+    st.stop()
+
 st.title("🖥️ Buat push dukung bukti EKIN")
 st.caption("Input laporan kendala IT dan simpan otomatis ke Google Drive")
 
@@ -1285,6 +1533,22 @@ if "ttd_cfg" not in st.session_state:
     st.session_state.ttd_cfg = cfg_loaded
     st.session_state.ttd_fid = fid_loaded
     st.session_state.setdefault("ttd_pengawas_nama", cfg_loaded.get("kanit_nama", ""))
+    st.session_state.setdefault("ttd_mode_ukuran", cfg_loaded.get("mode_ukuran", "luas"))
+
+if not st.session_state.get("_inbox_done"):       # tarik ttd dari link khusus, sekali per sesi
+    st.session_state["_inbox_done"] = True
+    try:
+        st.session_state["_inbox_msg"] = proses_ttd_masuk(service)
+    except Exception as _ex:
+        st.session_state["_inbox_msg"] = (0, 0, [str(_ex)])
+_im = st.session_state.pop("_inbox_msg", None)
+if _im:
+    if _im[0]:
+        st.success(f"📥 {_im[0]} tanda tangan dari link sudah masuk ke laporan.")
+    if _im[1]:
+        st.info(f"ℹ️ {_im[1]} tanda tangan dilewati karena entrinya sudah dihapus atau linknya diganti.")
+    if _im[2]:
+        st.warning("⚠️ Sebagian ttd belum bisa diproses: " + "; ".join(_im[2][:3]))
 
 with st.expander("✍️ TTD Permanen IT & Kanit (upload foto sekali, tersimpan di Drive)"):
     cfg_t = st.session_state.ttd_cfg
@@ -1308,6 +1572,10 @@ with st.expander("✍️ TTD Permanen IT & Kanit (upload foto sekali, tersimpan 
         ready_kn = ttd_crop_preview(up_kn, "ttd_kanit")
         st.text_input("Nama Kanit / Pengawas (Petugas Unit SIMRS)", key="ttd_pengawas_nama")
 
+    st.selectbox("Ukuran ttd di form", list(MODE_UKURAN_TTD.keys()), key="ttd_mode_ukuran",
+                 format_func=lambda k: MODE_UKURAN_TTD[k],
+                 help="Proporsi ttd tidak pernah digepengkan. Pilihan ini cuma menentukan ukuran acuannya. "
+                      "Klik Simpan Permanen supaya pilihannya tersimpan.")
     if st.button("💾 Simpan Permanen ke Drive"):
         if not st.session_state.ttd_fid:
             st.error(f"❌ `{TTD_JSON}` belum ada di Drive (lihat peringatan di atas).")
@@ -1319,6 +1587,7 @@ with st.expander("✍️ TTD Permanen IT & Kanit (upload foto sekali, tersimpan 
                 if ready_kn:
                     new_cfg["kanit_img_b64"] = img_to_b64(ready_kn)
                 new_cfg["kanit_nama"] = st.session_state.get("ttd_pengawas_nama", "")
+                new_cfg["mode_ukuran"] = st.session_state.get("ttd_mode_ukuran", "luas")
                 save_json(service, new_cfg, st.session_state.ttd_fid)
                 st.session_state.ttd_cfg = new_cfg
                 st.success("✅ TTD IT & Kanit tersimpan permanen.")
@@ -1556,6 +1825,15 @@ with tab2:
                     upload_pdf(service, generate_pdf(data, PDF_TITLE, HDR_TEXT, ROMAWI), PDF_NAME)
                 st.success("PDF berhasil diperbarui ke Drive dengan format terbaru ✅")
 
+        if st.button("📥 Tarik ttd masuk dari link"):
+            with st.spinner("Memeriksa kotak masuk ttd..."):
+                try:
+                    st.session_state["_inbox_msg"] = proses_ttd_masuk(service)
+                except Exception as _ex:
+                    st.session_state["_inbox_msg"] = (0, 0, [str(_ex)])
+            st.session_state["_inbox_done"] = True
+            st.rerun()
+
         # ── Download rekap SEMUA FORM (tanpa halaman tabel ringkasan) ──
         _sig_data = hash(json.dumps(data, sort_keys=True, default=str))
         col_siap, col_dl = st.columns(2)
@@ -1628,6 +1906,7 @@ with tab2:
                             with st.spinner("Menyimpan perubahan ke Drive..."):
                                 try:
                                     data[i], _w = lengkapi_entry({
+                                        **entry,
                                         "Bulan":   e_bulan,
                                         "Unit":    e_unit,
                                         "Kendala": e_kendala,
@@ -1654,7 +1933,7 @@ with tab2:
 
             # ── Mode NORMAL (tampil biasa + tombol Edit/Hapus) ─
             else:
-                c1, c2, c3 = st.columns([5, 1, 1])
+                c1, c2, c3, c4 = st.columns([5, 1, 1, 1])
                 with c1:
                     st.markdown(
                         f"**{i+1}. {entry.get('Bulan','-')} | {entry.get('Unit','-')}**  \n"
@@ -1664,12 +1943,24 @@ with tab2:
                         f"✅ {entry.get('Solusi','-')}  \n"
                         f"👤 {entry.get('Pelapor') or '-'} "
                         f"{'✍️ ttd ada' if entry.get('TTD_User') else '▫️ belum ada ttd'}"
+                        + (f"  🔗 link ttd aktif s.d. {entry.get('TTD_Token_Exp')}" if _token_aktif(entry) else "")
                     )
                 with c2:
                     if st.button("✏️", key=f"edit_{i}", help="Edit entri ini"):
                         st.session_state.edit_index = i
                         st.rerun()
                 with c3:
+                    if not entry.get("TTD_User") and st.button("🔗", key=f"lnk_{i}",
+                                                               help="Minta ttd user lewat link (kirim ke WhatsApp)"):
+                        try:
+                            if not _token_aktif(entry):
+                                _buat_token(data[i])
+                                save_json(service, data, fid)
+                            st.session_state["_link_token"] = data[i]["TTD_Token"]
+                        except Exception as ex_:
+                            st.error(f"❌ Gagal membuat link: {ex_}")
+                        st.rerun()
+                with c4:
                     if st.button("🗑️", key=f"del_{i}", help="Hapus entri ini"):
                         with st.spinner("Menghapus..."):
                             new_data = [e for j, e in enumerate(data) if j != i]
@@ -1677,6 +1968,46 @@ with tab2:
                             upload_pdf(service, generate_pdf(new_data, PDF_TITLE, HDR_TEXT, ROMAWI), PDF_NAME)
                             st.success("✅ Dihapus!")
                             st.rerun()
+
+    # ── Blok link ttd (muncul setelah tombol 🔗 ditekan) ──────
+    _tk = st.session_state.get("_link_token")
+    _ent = next((e_ for e_ in data if _token_aktif(e_, _tk)), None) if _tk else None
+    if _ent:
+        with st.container(border=True):
+            st.markdown(f"**🔗 Link tanda tangan — {_ent.get('Unit','-')}, {_ent.get('Tanggal') or '-'}**")
+            _gas, _url = _ttd_url(), _app_url()
+            _tw = list(TRIWULAN_CONFIG.keys()).index(selected_triwulan) + 1
+            if _gas:
+                _link = f"{_gas}?t={_ent['TTD_Token']}&tw={_tw}"
+            elif _url:
+                _link = f"{_url}/?ttd={_ent['TTD_Token']}&tw={_tw}"      # cadangan: membuka halaman di Streamlit
+            else:
+                _link = ""
+            if not _gas:
+                st.info("Mau link khusus yang tidak membuka Streamlit (tidak perlu menunggu app bangun)? "
+                        "Tempel URL web app Apps Script (hasil Deploy, berakhiran /exec). Cukup sekali, nanti tersimpan.")
+                _u_in = st.text_input("URL web app Apps Script", key="ttd_url_in",
+                                      placeholder="https://script.google.com/macros/s/.../exec")
+                if st.button("Simpan URL Apps Script", key="ttd_url_save") and _u_in.strip():
+                    if not url_apps_script_valid(_u_in.strip()):
+                        st.error("URL harus berawalan https://script.google.com/ dan berakhiran /exec "
+                                 "(bukan /edit atau /dev).")
+                    elif not st.session_state.get("ttd_fid"):
+                        st.error("File ttd_config.json belum ada di Drive.")
+                    else:
+                        _c = dict(st.session_state.ttd_cfg); _c["ttd_url"] = _u_in.strip()
+                        save_json(service, _c, st.session_state.ttd_fid)
+                        st.session_state.ttd_cfg = _c
+                        st.rerun()
+            if _link:
+                st.code(_link, language=None)
+                _pesan = (f"Halo, mohon konfirmasi penerimaan servis IT ({_ent.get('Unit','-')}, "
+                          f"{_ent.get('Tanggal') or '-'}) dengan tanda tangan di link berikut:\n{_link}\n\n"
+                          f"Cara: buka link, cek nama, coret tanda tangan pakai jari, centang pernyataan, "
+                          f"lalu tekan Kirim. Link hanya bisa dipakai sekali. Terima kasih.")
+                st.markdown(f"[📲 Kirim via WhatsApp](https://wa.me/?text={quote(_pesan)})")
+                st.caption(f"Sekali pakai, berlaku sampai {_ent.get('TTD_Token_Exp')} WIB. "
+                           f"Yang membuka link hanya bisa menandatangani laporan ini.")
 
     # ── Gabungkan Data Januari–April ──────────────────────────
     st.divider()
