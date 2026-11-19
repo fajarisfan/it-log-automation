@@ -932,9 +932,21 @@ def build_form_flowables(e, nomor, total, tanpa_ttd_staf=False, tampil_nomor=Tru
     return out
 
 # ── PDF Generator ─────────────────────────────────────────────
+class _Penanda(Flowable):
+    """Flowable tanpa ukuran: mencatat nomor halaman tempat ia tergambar."""
+    def __init__(self, simpan, nama):
+        super().__init__()
+        self.simpan, self.nama = simpan, nama
+        self.width = self.height = 0
+    def wrap(self, aw, ah):
+        return (0, 0)
+    def draw(self):
+        self.simpan[self.nama] = self.canv.getPageNumber()
+
 def generate_pdf(all_data, pdf_title="Laporan IT Triwulan I", header_text="LAPORAN IT TRIWULAN I", romawi="I",
-                 hanya_form=False, cetak=False, tanpa_ttd_staf=False):
+                 hanya_form=False, cetak=False, tanpa_ttd_staf=False, kompak=False):
     all_data = urutkan(all_data)
+    _pad = 4 if kompak else 6                    # kompak: dipakai otomatis kalau ringkasan terlempar sendirian ke halaman baru
     buf = io.BytesIO()
     nomor_dokumen = f"No: LAP-IT/TW-{romawi}/{datetime.now().year}/RSUD-CLG"
     doc = BaseDocTemplate(buf, pagesize=A4,
@@ -963,9 +975,9 @@ def generate_pdf(all_data, pdf_title="Laporan IT Triwulan I", header_text="LAPOR
     s_pel   = ParagraphStyle("pel", fontName="Helvetica", fontSize=7.5,
                              textColor=C_TEXT, alignment=TA_CENTER, leading=10)
     s_ringkasan_title = ParagraphStyle("ringkasan_title", fontName="Helvetica-Bold",
-                             fontSize=10, textColor=C_HEADER, spaceBefore=10, spaceAfter=4)
+                             fontSize=10, textColor=C_HEADER, spaceBefore=(4 if kompak else 10), spaceAfter=4)
     s_ringkasan = ParagraphStyle("ringkasan", fontName="Helvetica", fontSize=9,
-                             textColor=C_TEXT, leading=14, alignment=TA_LEFT)
+                             textColor=C_TEXT, leading=(12 if kompak else 14), alignment=TA_LEFT)
 
     elements = [Spacer(1, 0.2*cm),
                 Paragraph(pdf_title, s_judul),
@@ -1008,8 +1020,8 @@ def generate_pdf(all_data, pdf_title="Laporan IT Triwulan I", header_text="LAPOR
         ("VALIGN",        (0,1),(-1,-1),"TOP"),
         ("FONTNAME",      (0,1),(-1,-1),"Helvetica"),
         ("FONTSIZE",      (0,1),(-1,-1), 8.5),
-        ("TOPPADDING",    (0,1),(-1,-1), 6),
-        ("BOTTOMPADDING", (0,1),(-1,-1), 6),
+        ("TOPPADDING",    (0,1),(-1,-1), _pad),
+        ("BOTTOMPADDING", (0,1),(-1,-1), _pad),
         ("LEFTPADDING",   (0,0),(-1,-1), 6),
         ("RIGHTPADDING",  (0,0),(-1,-1), 6),
         ("ALIGN",         (0,1),(0,-1), "CENTER"),
@@ -1021,8 +1033,8 @@ def generate_pdf(all_data, pdf_title="Laporan IT Triwulan I", header_text="LAPOR
     ]))
 
     bulan_list = list(dict.fromkeys(bulan_entri(e) for e in all_data))
-    blok_ringkasan = [Spacer(1, 0.5*cm),
-                      HRFlowable(width="100%", thickness=1, color=C_SUBHEAD, spaceAfter=6),
+    blok_ringkasan = [Spacer(1, (0.15 if kompak else 0.5)*cm),
+                      HRFlowable(width="100%", thickness=1, color=C_SUBHEAD, spaceAfter=(3 if kompak else 6)),
                       Paragraph(f"Total entri: <b>{len(all_data)}</b> &nbsp;|&nbsp; "
                                 f"Bulan tercatat: <b>{', '.join(bulan_list)}</b>", s_info)]
 
@@ -1049,7 +1061,8 @@ def generate_pdf(all_data, pdf_title="Laporan IT Triwulan I", header_text="LAPOR
             Paragraph(ringkasan_text, s_ringkasan),
         ]
     # tabel dulu, lalu ringkasan satu blok utuh (tidak pernah kepotong ke halaman berikutnya)
-    elements += [tbl, KeepTogether(blok_ringkasan)]
+    _hal = {}
+    elements += [tbl, _Penanda(_hal, "tbl"), KeepTogether([_Penanda(_hal, "sum")] + blok_ringkasan)]
 
     if hanya_form:                       # rekap form saja (tanpa tabel ringkasan)
         elements = []
@@ -1063,6 +1076,11 @@ def generate_pdf(all_data, pdf_title="Laporan IT Triwulan I", header_text="LAPOR
             elements.append(PageBreak())
             elements += build_form_flowables(e, n, len(all_data))
     doc.build(elements)
+    # ringkasan terlempar sendirian ke halaman baru (halaman hampir kosong)? bangun ulang dengan tata letak lebih rapat
+    if (not kompak and not hanya_form and _hal.get("sum") and _hal.get("tbl")
+            and _hal["sum"] > _hal["tbl"]):
+        return generate_pdf(all_data, pdf_title, header_text, romawi,
+                            hanya_form=hanya_form, cetak=cetak, tanpa_ttd_staf=tanpa_ttd_staf, kompak=True)
     buf.seek(0)
     return buf
 
