@@ -132,7 +132,16 @@ def load_json(service, json_name="laporan_db.json"):
     raw = fh.getvalue().decode("utf-8").strip()
     if not raw:
         return [], fid
-    return json.loads(raw), fid
+    data = json.loads(raw)
+    if isinstance(data, list):                      # jam lama "09.22" -> "09:22"
+        for e_ in data:
+            if isinstance(e_, dict):
+                for k_ in ("Mulai_Jam", "Selesai_Jam"):
+                    if e_.get(k_):
+                        e_[k_] = _norm_jam(e_[k_])
+                if e_.get("TTD_Waktu"):
+                    e_["TTD_Waktu"] = _norm_waktu(e_["TTD_Waktu"])
+    return data, fid
 
 def save_json(service, data, fid=None):
     if not fid:
@@ -315,7 +324,7 @@ def hari_ini_wib():
     return datetime.now(WIB).date()
 
 def jam_sekarang():
-    return datetime.now(WIB).strftime("%H.%M")
+    return datetime.now(WIB).strftime("%H:%M")
 
 def parse_tanggal_id(txt):
     """'10 November 2026' / '10/11/2026' / '2026-11-10' -> date, atau None."""
@@ -345,7 +354,18 @@ def _jam_ke_menit(j):
 
 def _menit_ke_jam(mnt):
     mnt %= 1440
-    return f"{mnt // 60:02d}.{mnt % 60:02d}"
+    return f"{mnt // 60:02d}:{mnt % 60:02d}"
+
+def _norm_jam(j):
+    """'9.05' / '09.05' -> '09:05'. Teks lain dibiarkan."""
+    m = re.match(r"^\s*(\d{1,2})[.:](\d{2})\s*$", str(j or ""))
+    return f"{int(m.group(1)):02d}:{m.group(2)}" if m else j
+
+def _norm_waktu(w):
+    """'19 November 2026 19.42' -> '19 November 2026 19:42'."""
+    if not w:
+        return w
+    return re.sub(r"(\d{1,2})\.(\d{2})\s*$", lambda m: f"{int(m.group(1)):02d}:{m.group(2)}", str(w))
 
 def bulan_entri(e):
     """Bulan sebuah entri: dari tanggalnya kalau ada, kalau tidak dari kolom Bulan."""
@@ -443,7 +463,7 @@ def _wa_msg_start(line):
             d = date(y, int(m.group("mo")), int(m.group("d")))
         except ValueError:
             return None
-        return {"date": d, "jam": f"{h:02d}.{m.group('mi')}",
+        return {"date": d, "jam": f"{h:02d}:{m.group('mi')}",
                 "sender": m.group("s").strip(), "text": m.group("t")}
     return None
 
@@ -1168,6 +1188,9 @@ def lengkapi_entry(e, live):
     Selalu: tebak peralatan/jenis kalau kosong, dan samakan Bulan dengan tanggal."""
     warn = []
     ss = st.session_state
+    for k_ in ("Mulai_Jam", "Selesai_Jam"):
+        if e.get(k_):
+            e[k_] = _norm_jam(e[k_])
     if live and e.get("Tanggal") == tanggal_hari_ini():
         if not e.get("Selesai_Jam"):
             e["Selesai_Jam"] = jam_sekarang()
@@ -1333,7 +1356,7 @@ def tandai_ttd_selesai(service, fid, nama, awalan="ttd_selesai_"):
 def _waktu_indo(txt):
     try:
         d_ = datetime.strptime(str(txt), "%Y-%m-%d %H:%M")
-        return f"{d_.day} {BULAN_ID[d_.month-1]} {d_.year} {d_.hour:02d}.{d_.minute:02d}"
+        return f"{d_.day} {BULAN_ID[d_.month-1]} {d_.year} {d_.hour:02d}:{d_.minute:02d}"
     except Exception:
         return f"{tanggal_hari_ini()} {jam_sekarang()}"
 
