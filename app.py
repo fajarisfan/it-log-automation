@@ -1369,7 +1369,7 @@ def _ttd_url():
         u = st.secrets["TTD_URL"]
     except Exception:
         u = ""
-    return str(u or (st.session_state.get("ttd_cfg") or {}).get("ttd_url") or "").strip()
+    return str((st.session_state.get("ttd_cfg") or {}).get("ttd_url") or u or "").strip()
 
 def url_apps_script_valid(u):
     return u.startswith("https://script.google.com/") and "/macros/s/" in u and u.endswith("/exec")
@@ -1986,6 +1986,8 @@ with tab2:
             if not _gas:
                 st.info("Mau link khusus yang tidak membuka Streamlit (tidak perlu menunggu app bangun)? "
                         "Tempel URL web app Apps Script (hasil Deploy, berakhiran /exec). Cukup sekali, nanti tersimpan.")
+            with st.expander("⚙️ Ubah URL Apps Script", expanded=not _gas):
+                st.caption(f"URL aktif: {_gas or '(belum diatur)'}")
                 _u_in = st.text_input("URL web app Apps Script", key="ttd_url_in",
                                       placeholder="https://script.google.com/macros/s/.../exec")
                 if st.button("Simpan URL Apps Script", key="ttd_url_save") and _u_in.strip():
