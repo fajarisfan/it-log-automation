@@ -1409,7 +1409,7 @@ def _admin_pin():
 def halaman_ttd(service, token, tw):
     """Halaman publik: user melihat ringkasan servis, menandatangani di layar, ttd tersimpan ke data."""
     st.title("✍️ Konfirmasi Penerimaan Servis IT")
-    st.caption("RSUD Kota Cilegon · Divisi IT")
+    st.caption("RSUD Kota Cilegon · IT SIRS")
     if st.session_state.get("_ttd_selesai"):
         st.success("✅ Terima kasih, tanda tangan Anda sudah tersimpan. Halaman ini boleh ditutup.")
         return
@@ -2001,10 +2001,12 @@ with tab2:
                         st.rerun()
             if _link:
                 st.code(_link, language=None)
-                _pesan = (f"Halo, mohon konfirmasi penerimaan servis IT ({_ent.get('Unit','-')}, "
+                _pesan = (f"Assalamualaikum, Bapak/Ibu. Saya Isfan dari IT SIRS RSUD Kota Cilegon.\n\n"
+                          f"Mohon konfirmasi penerimaan servis IT ({_ent.get('Unit','-')}, "
                           f"{_ent.get('Tanggal') or '-'}) dengan tanda tangan di link berikut:\n{_link}\n\n"
-                          f"Cara: buka link, cek nama, coret tanda tangan pakai jari, centang pernyataan, "
-                          f"lalu tekan Kirim. Link hanya bisa dipakai sekali. Terima kasih.")
+                          f"Caranya: buka link, cek nama, tanda tangan dengan jari, centang pernyataan, "
+                          f"lalu tekan Kirim. Link hanya bisa dipakai sekali.\n\n"
+                          f"Terima kasih atas waktunya 🙏")
                 st.markdown(f"[📲 Kirim via WhatsApp](https://wa.me/?text={quote(_pesan)})")
                 st.caption(f"Sekali pakai, berlaku sampai {_ent.get('TTD_Token_Exp')} WIB. "
                            f"Yang membuka link hanya bisa menandatangani laporan ini.")
