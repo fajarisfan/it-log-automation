@@ -2106,12 +2106,22 @@ with tab2:
                         st.session_state.ttd_cfg = _c
                         st.rerun()
             if _link:
+                _sap = st.selectbox("Panggilan penerima", ["Bapak/Ibu", "Bapak", "Ibu", "Teh", "Mas", "Mbak"],
+                                    key=f"sapaan_{_ent.get('TTD_Token')}",
+                                    help="Dipakai di salam pesan WhatsApp, misalnya: Assalamualaikum, Teh Nuning.")
                 st.code(_link, language=None)
-                _pesan = (f"Assalamualaikum, Bapak/Ibu. Saya Isfan dari IT SIRS RSUD Kota Cilegon.\n\n"
-                          f"Mohon konfirmasi penerimaan servis IT ({_ent.get('Unit','-')}, "
-                          f"{_ent.get('Tanggal') or '-'}) dengan tanda tangan di link berikut:\n{_link}\n\n"
+                _nama = str(_ent.get("Pelapor") or "").strip()
+                _sapa = f"{_sap} {_nama}" if _nama and _nama != "-" else _sap
+                _unit = str(_ent.get("Unit") or "").strip()
+                _tgl = str(_ent.get("Tanggal") or "").strip()
+                _di = f" di {_unit}" if _unit and _unit != "-" else ""
+                _pada = f" pada {_tgl}" if _tgl and _tgl != "-" else ""
+                _pesan = (f"Assalamualaikum, {_sapa}. Saya Isfan dari IT SIRS RSUD Kota Cilegon.\n\n"
+                          f"Kami mohon konfirmasi bahwa tim IT sudah membantu{_di}{_pada}. "
+                          f"Mohon tanda tangan di link berikut:\n{_link}\n\n"
                           f"Caranya: buka link, cek nama, tanda tangan dengan jari, centang pernyataan, "
-                          f"lalu tekan Kirim. Link hanya bisa dipakai sekali.\n\n"
+                          f"lalu tekan Kirim. Setelah itu selesai, tidak perlu mengirim screenshot atau balasan ke saya. "
+                          f"Link hanya bisa dipakai sekali.\n\n"
                           f"Terima kasih atas waktunya 🙏")
                 st.markdown(f"[📲 Kirim via WhatsApp](https://wa.me/?text={quote(_pesan)})")
                 st.caption(f"Sekali pakai, berlaku sampai {_ent.get('TTD_Token_Exp')} WIB. "
