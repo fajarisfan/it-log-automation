@@ -1148,13 +1148,13 @@ def detail_inputs(prefix, e=None):
         c1, c2 = st.columns(2)
         with c1:
             if new:
-                m_jam = st.text_input("Jam mulai (mis. 09.00)", key="in_mjam")
+                m_jam = st.text_input("Jam mulai (mis. 09:00)", key="in_mjam")
                 st.button("⏱ Mulai = sekarang", key="btn_mjam", on_click=_stamp_jam, args=("in_mjam",))
             else:
                 m_jam = st.text_input("Jam mulai", value=e.get("Mulai_Jam", ""), key=f"{prefix}_mjam")
         with c2:
             if new:
-                s_jam = st.text_input("Jam selesai (mis. 09.45)", key="in_sjam")
+                s_jam = st.text_input("Jam selesai (mis. 09:45)", key="in_sjam")
                 st.button("⏱ Selesai = sekarang", key="btn_sjam", on_click=_stamp_jam, args=("in_sjam",))
             else:
                 s_jam = st.text_input("Jam selesai", value=e.get("Selesai_Jam", ""), key=f"{prefix}_sjam")
@@ -1447,6 +1447,9 @@ def _css_daftar():
         "div[data-testid='stHorizontalBlock']:has(.aksi-baris)>div[data-testid='column']"
         "{min-width:0!important;flex:1 1 0!important;width:auto!important;}"
         "div[data-testid='stHorizontalBlock']:has(.aksi-baris) button{width:100%;white-space:nowrap;padding:.25rem .4rem;}"
+        "div[data-testid='stHorizontalBlock']:has(.aksi-baris) div[data-testid='stElementContainer']{width:100%!important;}"
+        "div[data-testid='stHorizontalBlock']:has(.aksi-baris) div[data-testid='stElementContainer']:has(.aksi-baris){display:none!important;}"
+        "div[data-testid='stHorizontalBlock']:has(.aksi-baris) div[data-testid='stButton']{width:100%!important;}"
         ".aksi-baris{display:none;}"
         "</style>", unsafe_allow_html=True)
 
@@ -2106,7 +2109,7 @@ with tab2:
                         st.session_state.ttd_cfg = _c
                         st.rerun()
             if _link:
-                _sap = st.selectbox("Panggilan penerima", ["Bapak/Ibu", "Bapak", "Ibu", "Teh", "Mas", "Mbak"],
+                _sap = st.selectbox("Panggilan penerima", ["Bapak/Ibu", "Bapak", "Ibu", "Teh", "Mas", "Mbak", "Dokter"],
                                     key=f"sapaan_{_ent.get('TTD_Token')}",
                                     help="Dipakai di salam pesan WhatsApp, misalnya: Assalamualaikum, Teh Nuning.")
                 st.code(_link, language=None)
