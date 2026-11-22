@@ -1489,6 +1489,13 @@ def _admin_pin():
     except Exception:
         return ""
 
+def _admin_key():
+    """Kunci panjang untuk link bookmark (tanpa ketik PIN). Diisi di secrets: ADMIN_KEY."""
+    try:
+        return str(st.secrets["ADMIN_KEY"])
+    except Exception:
+        return ""
+
 def halaman_ttd(service, token, tw):
     """Halaman publik: user melihat ringkasan servis, menandatangani di layar, ttd tersimpan ke data."""
     st.title("✍️ Konfirmasi Penerimaan Servis IT")
@@ -1561,15 +1568,22 @@ if "ttd" in _qp:                                   # mode publik: HANYA halaman 
     halaman_ttd(get_drive_service(), _qp.get("ttd"), _qp.get("tw"))
     st.stop()
 
-_pin = _admin_pin()                                # gerbang admin (aktif kalau ADMIN_PIN diisi di secrets)
-if _pin and not st.session_state.get("_admin_ok"):
+_pin = _admin_pin()                                # gerbang admin (aktif kalau ADMIN_PIN dan/atau ADMIN_KEY diisi di secrets)
+_kunci = _admin_key()
+_qk = str(_qp.get("k", "") or "")
+if _kunci and _qk and hmac.compare_digest(_qk, _kunci):      # masuk lewat link bookmark ?k=<ADMIN_KEY>
+    st.session_state["_admin_ok"] = True
+if (_pin or _kunci) and not st.session_state.get("_admin_ok"):
     st.title("🔒 Masuk")
-    _masuk = st.text_input("PIN admin", type="password")
-    if _masuk and hmac.compare_digest(_masuk, _pin):
-        st.session_state["_admin_ok"] = True
-        st.rerun()
-    elif _masuk:
-        st.error("PIN salah.")
+    if _pin:
+        _masuk = st.text_input("PIN admin", type="password")
+        if _masuk and hmac.compare_digest(_masuk, _pin):
+            st.session_state["_admin_ok"] = True
+            st.rerun()
+        elif _masuk:
+            st.error("PIN salah.")
+    else:
+        st.info("Buka aplikasi lewat link bookmark yang berisi kunci.")
     st.stop()
 
 st.markdown('<div class="hero"><div class="hero-t">🖥️ Buat push dukung bukti EKIN</div>'
