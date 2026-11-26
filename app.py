@@ -2331,17 +2331,21 @@ with tab3:
     if not data_c:
         st.info("Belum ada data laporan.")
     else:
-        semua = st.checkbox("Tampilkan juga yang sudah ttd digital", key="cetak_semua")
         opsi_c = ["Semua"] + BULAN_TRIWULAN
         if st.session_state.get("cetak_bulan") not in opsi_c:
             st.session_state["cetak_bulan"] = "Semua"
-        fb_c = st.selectbox("Filter bulan", opsi_c, key="cetak_bulan")
+        fc1, fc2 = st.columns(2)
+        with fc1:
+            fb_c = st.selectbox("Filter bulan", opsi_c, key="cetak_bulan")
+        with fc2:
+            ft_c = st.selectbox("Filter status TTD", ["Belum TTD", "Sudah TTD", "Semua"], key="cetak_ttd")
         idxs = [i for i, e_ in enumerate(data_c)
-                if (semua or not e_.get("TTD_User")) and (fb_c == "Semua" or bulan_entri(e_) == fb_c)]
+                if (ft_c == "Semua" or (ft_c == "Sudah TTD" and e_.get("TTD_User")) or (ft_c == "Belum TTD" and not e_.get("TTD_User")))
+                and (fb_c == "Semua" or bulan_entri(e_) == fb_c)]
         if not idxs:
             st.success("✅ Semua entri sudah punya ttd user digital.")
         else:
-            st.write(f"**{len(idxs)}** entri" + ("" if semua else " belum ada ttd user") + ":")
+            st.write(f"**{len(idxs)}** entri ({ft_c}):")
             b1, b2 = st.columns(2)
             with b1: st.button("☑️ Pilih semua", on_click=_cetak_pilih, args=(idxs, True), key="cetak_all")
             with b2: st.button("⬜ Kosongkan pilihan", on_click=_cetak_pilih, args=(idxs, False), key="cetak_none")
