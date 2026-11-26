@@ -714,6 +714,14 @@ def parse_wa_report(text, default_bulan, known_units=None, it_names=None, reply_
     return [e for e in entries if e["Unit"] or e["Kendala"] or e["Solusi"]]
 
 # ── Dekorasi halaman PDF ──────────────────────────────────────
+def _logo_reader():
+    """Logo kota dari base64. Kalau string rusak/terpotong, kembalikan None (PDF tetap dibuat)."""
+    try:
+        raw = base64.b64decode(LOGO_KOTA_CILEGON_B64 + "=" * (-len(LOGO_KOTA_CILEGON_B64) % 4))
+        return ImageReader(io.BytesIO(raw))
+    except Exception:
+        return None
+
 def make_page_decorator(header_text):
     def add_page_decorations(canvas, doc):
         canvas.saveState()
@@ -724,15 +732,17 @@ def make_page_decorator(header_text):
         canvas.setFillColor(C_ACCENT)
         canvas.rect(0, H - HEADER_H - 0.22*cm, W, 0.22*cm, fill=1, stroke=0)
 
-        logo_reader = ImageReader(io.BytesIO(base64.b64decode(LOGO_KOTA_CILEGON_B64)))
-        logo_h = 1.15*cm
-        logo_w = logo_h * (logo_reader.getSize()[0] / logo_reader.getSize()[1])
-        canvas.drawImage(logo_reader, 1.5*cm, H - HEADER_H + (HEADER_H - logo_h)/2,
-                         width=logo_w, height=logo_h, mask="auto", preserveAspectRatio=True)
+        logo_reader = _logo_reader()             # kalau logo rusak, PDF tetap jadi (tanpa logo)
+        logo_w = 0
+        if logo_reader is not None:
+            logo_h = 1.15*cm
+            logo_w = logo_h * (logo_reader.getSize()[0] / logo_reader.getSize()[1])
+            canvas.drawImage(logo_reader, 1.5*cm, H - HEADER_H + (HEADER_H - logo_h)/2,
+                             width=logo_w, height=logo_h, mask="auto", preserveAspectRatio=True)
 
         canvas.setFillColor(C_WHITE)
         canvas.setFont("Helvetica-Bold", 9)
-        canvas.drawString(1.5*cm + logo_w + 0.3*cm, H - 0.68*cm, header_text)
+        canvas.drawString(1.5*cm + (logo_w + 0.3*cm if logo_w else 0), H - 0.68*cm, header_text)
         canvas.setFont("Helvetica", 7.5)
         canvas.drawRightString(W - 1.5*cm, H - 0.68*cm, "Teknisi: Isfan Fajar Anugrah")
         canvas.drawRightString(W - 1.5*cm, H - 1.15*cm, "NIP: 199709302025211069")
