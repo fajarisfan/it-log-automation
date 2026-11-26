@@ -5,6 +5,7 @@ import base64
 import re
 import hmac
 import hashlib
+import zipfile
 import secrets as _secrets
 from urllib.parse import quote
 from xml.sax.saxutils import escape as _xml_escape
@@ -2001,19 +2002,25 @@ with tab2:
             st.session_state["_inbox_done"] = True
             st.rerun()
 
-        if st.button("🖼️ Simpan semua TTD ke folder bulan (PNG)"):
-            with st.spinner("Menyimpan gambar TTD ke folder bulan di Drive..."):
-                jml, err_png = 0, []
+        if st.button("🖼️ Siapkan ZIP TTD per folder bulan (PNG)"):
+            zbuf = io.BytesIO()
+            jml = 0
+            with zipfile.ZipFile(zbuf, "w", zipfile.ZIP_DEFLATED) as zf:
                 for e_ in data:
                     if e_.get("TTD_User"):
-                        try:
-                            simpan_bukti_ttd_png(service, e_, base64.b64decode(e_["TTD_User"]))
-                            jml += 1
-                        except Exception as ex_:
-                            err_png.append(f"{e_.get('Unit', '-')}: {ex_}")
-            st.success(f"✅ {jml} gambar TTD berhasil disimpan ke folder bulan masing-masing.")
-            if err_png:
-                st.warning("⚠️ Sebagian gagal disimpan: " + "; ".join(err_png[:3]))
+                        bln = bulan_entri(e_)
+                        if not bln or bln == "-":
+                            bln = "Lainnya"
+                        tgl = re.sub(r"[\\/:*?\"<>|']", "-", str(e_.get("Tanggal") or "tanpa_tgl")).strip()
+                        unit = re.sub(r"[\\/:*?\"<>|']", "_", str(e_.get("Unit") or "Unit")).strip()
+                        nama = re.sub(r"[\\/:*?\"<>|']", "_", str(e_.get("Pelapor") or "User")).strip()
+                        zf.writestr(f"{bln}/TTD_{tgl}_{unit}_{nama}.png", base64.b64decode(e_["TTD_User"]))
+                        jml += 1
+            st.session_state["_ttd_zip"] = zbuf.getvalue()
+            st.success(f"✅ {jml} gambar TTD siap didownload (terkelompok per folder bulan).")
+        if st.session_state.get("_ttd_zip"):
+            st.download_button("📥 Download ZIP TTD (PNG)", data=st.session_state["_ttd_zip"],
+                               file_name=f"Bukti_TTD_{PDF_NAME.replace('.pdf', '.zip')}", mime="application/zip")
 
         # ── Download rekap SEMUA FORM (tanpa halaman tabel ringkasan) ──
         _sig_data = hash(json.dumps(data, sort_keys=True, default=str))
