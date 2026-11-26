@@ -116,7 +116,7 @@ def get_drive_service():
 
 def get_file_id(service, name, parent_id=FOLDER_ID):
     q = f"name='{name}' and '{parent_id}' in parents and trashed=false"
-    res = service.files().list(q=q, fields="files(id)").execute()
+    res = service.files().list(q=q, fields="files(id)").execute(num_retries=3)
     items = res.get("files", [])
     return items[0]["id"] if items else None
 
@@ -2083,13 +2083,22 @@ with tab2:
         opsi_filter = ["Semua"] + BULAN_TRIWULAN
         if st.session_state.get("filter_bulan") not in opsi_filter:
             st.session_state["filter_bulan"] = "Semua"
-        filter_b = st.selectbox("Filter bulan", opsi_filter, key="filter_bulan")
+        f_col1, f_col2 = st.columns(2)
+        with f_col1:
+            filter_b = st.selectbox("Filter bulan", opsi_filter, key="filter_bulan")
+        with f_col2:
+            filter_ttd = st.selectbox("Filter status TTD", ["Semua", "Sudah TTD", "Belum TTD"], key="filter_ttd")
         bulan_sebelumnya = None
         _css_daftar()
 
         for i, entry in enumerate(data):
             bln_e = bulan_entri(entry)
             if filter_b != "Semua" and bln_e != filter_b:
+                continue
+            sudah_ttd_e = bool(entry.get("TTD_User"))
+            if filter_ttd == "Sudah TTD" and not sudah_ttd_e:
+                continue
+            if filter_ttd == "Belum TTD" and sudah_ttd_e:
                 continue
             if filter_b == "Semua" and bln_e != bulan_sebelumnya and st.session_state.edit_index != i:
                 st.markdown(f"##### 📆 {bln_e}")
