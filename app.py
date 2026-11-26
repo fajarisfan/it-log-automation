@@ -2060,6 +2060,24 @@ with tab2:
 
         st.divider()
 
+        _gas_now = _ttd_url()
+        with st.expander("⚙️ Ubah URL Apps Script", expanded=not _gas_now):
+            st.caption(f"URL aktif: {_gas_now or '(belum diatur)'}")
+            _u_in = st.text_input("URL web app Apps Script", key="ttd_url_in",
+                                  placeholder="https://script.google.com/macros/s/.../exec")
+            if st.button("Simpan URL Apps Script", key="ttd_url_save") and _u_in.strip():
+                if not url_apps_script_valid(_u_in.strip()):
+                    st.error("URL harus berawalan https://script.google.com/ dan berakhiran /exec "
+                             "(bukan /edit atau /dev).")
+                elif not st.session_state.get("ttd_fid"):
+                    st.error("File ttd_config.json belum ada di Drive.")
+                else:
+                    _c = dict(st.session_state.ttd_cfg); _c["ttd_url"] = _u_in.strip()
+                    save_json(service, _c, st.session_state.ttd_fid)
+                    st.session_state.ttd_cfg = _c
+                    st.success("✅ URL Apps Script tersimpan.")
+                    st.rerun()
+
         BULAN_OPTIONS = BULAN_TRIWULAN
 
         opsi_filter = ["Semua"] + BULAN_TRIWULAN
@@ -2220,22 +2238,7 @@ with tab2:
                 _link = ""
             if not _gas:
                 st.info("Mau link khusus yang tidak membuka Streamlit (tidak perlu menunggu app bangun)? "
-                        "Tempel URL web app Apps Script (hasil Deploy, berakhiran /exec). Cukup sekali, nanti tersimpan.")
-            with st.expander("⚙️ Ubah URL Apps Script", expanded=not _gas):
-                st.caption(f"URL aktif: {_gas or '(belum diatur)'}")
-                _u_in = st.text_input("URL web app Apps Script", key="ttd_url_in",
-                                      placeholder="https://script.google.com/macros/s/.../exec")
-                if st.button("Simpan URL Apps Script", key="ttd_url_save") and _u_in.strip():
-                    if not url_apps_script_valid(_u_in.strip()):
-                        st.error("URL harus berawalan https://script.google.com/ dan berakhiran /exec "
-                                 "(bukan /edit atau /dev).")
-                    elif not st.session_state.get("ttd_fid"):
-                        st.error("File ttd_config.json belum ada di Drive.")
-                    else:
-                        _c = dict(st.session_state.ttd_cfg); _c["ttd_url"] = _u_in.strip()
-                        save_json(service, _c, st.session_state.ttd_fid)
-                        st.session_state.ttd_cfg = _c
-                        st.rerun()
+                        "Tempel URL web app Apps Script di menu **⚙️ Ubah URL Apps Script** di atas.")
             if _link:
                 _sap = st.selectbox("Panggilan penerima", ["Bapak/Ibu", "Bapak", "Ibu", "Teh", "Mas", "Mbak", "Dokter"],
                                     key=f"sapaan_{_ent.get('TTD_Token')}",
