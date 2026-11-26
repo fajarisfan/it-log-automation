@@ -2002,7 +2002,27 @@ with tab2:
             st.session_state["_inbox_done"] = True
             st.rerun()
 
-        if st.button("🖼️ Siapkan ZIP TTD per folder bulan (PNG)"):
+        if st.button("🖼️ Siapkan ZIP Bukti Terima Kasih per folder bulan (PNG)"):
+            from PIL import Image as PILImage, ImageDraw, ImageFont
+            def _buat_kartu_terimakasih(e_):
+                W, H = 900, 320
+                im = PILImage.new("RGB", (W, H), "#F4F6F8")
+                dr = ImageDraw.Draw(im)
+                dr.rectangle([0, 0, W, 72], fill="#1A5276")
+                dr.rectangle([0, 72, W, 78], fill="#F39C12")
+                f_hdr = ImageFont.load_default()
+                dr.text((24, 18), "Konfirmasi Penerimaan Servis IT", fill="#FFFFFF", font=f_hdr)
+                dr.text((24, 42), "RSUD Kota Cilegon - IT SIRS", fill="#D6EAF8", font=f_hdr)
+                dr.rounded_rectangle([140, 115, W - 140, 275], radius=14, fill="#E8F6EE", outline="#B7E4C7", width=2)
+                dr.text((W // 2, 155), "Terima kasih.", fill="#1E8449", font=f_hdr, anchor="mm")
+                dr.text((W // 2, 185), "Tanda tangan Anda sudah tersimpan.", fill="#1E8449", font=f_hdr, anchor="mm")
+                dr.text((W // 2, 215), "Halaman ini boleh ditutup.", fill="#1E8449", font=f_hdr, anchor="mm")
+                info = f"{e_.get('Pelapor') or '-'} | {e_.get('Unit') or '-'} | {e_.get('Tanggal') or '-'}"
+                dr.text((W // 2, 248), info, fill="#566573", font=f_hdr, anchor="mm")
+                out = io.BytesIO()
+                im.save(out, "PNG")
+                return out.getvalue()
+
             zbuf = io.BytesIO()
             jml = 0
             with zipfile.ZipFile(zbuf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -2014,13 +2034,13 @@ with tab2:
                         tgl = re.sub(r"[\\/:*?\"<>|']", "-", str(e_.get("Tanggal") or "tanpa_tgl")).strip()
                         unit = re.sub(r"[\\/:*?\"<>|']", "_", str(e_.get("Unit") or "Unit")).strip()
                         nama = re.sub(r"[\\/:*?\"<>|']", "_", str(e_.get("Pelapor") or "User")).strip()
-                        zf.writestr(f"{bln}/TTD_{tgl}_{unit}_{nama}.png", base64.b64decode(e_["TTD_User"]))
+                        zf.writestr(f"{bln}/Bukti_{tgl}_{unit}_{nama}.png", _buat_kartu_terimakasih(e_))
                         jml += 1
             st.session_state["_ttd_zip"] = zbuf.getvalue()
-            st.success(f"✅ {jml} gambar TTD siap didownload (terkelompok per folder bulan).")
+            st.success(f"✅ {jml} gambar bukti Terima Kasih siap didownload (terkelompok per folder bulan).")
         if st.session_state.get("_ttd_zip"):
-            st.download_button("📥 Download ZIP TTD (PNG)", data=st.session_state["_ttd_zip"],
-                               file_name=f"Bukti_TTD_{PDF_NAME.replace('.pdf', '.zip')}", mime="application/zip")
+            st.download_button("📥 Download ZIP Bukti Terima Kasih (PNG)", data=st.session_state["_ttd_zip"],
+                               file_name=f"Bukti_TerimaKasih_{PDF_NAME.replace('.pdf', '.zip')}", mime="application/zip")
 
         # ── Download rekap SEMUA FORM (tanpa halaman tabel ringkasan) ──
         _sig_data = hash(json.dumps(data, sort_keys=True, default=str))
